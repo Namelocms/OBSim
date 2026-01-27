@@ -13,5 +13,57 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="Source Files\Agent">
+      <UniqueIdentifier>{aec406f1-0a8b-4eba-ab21-12e3aa868c91}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Order">
+      <UniqueIdentifier>{5449c463-0555-4bfd-98e2-24dc16531dd2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\OrderBook">
+      <UniqueIdentifier>{01cf41e9-4fbe-416c-91d2-c69379a6e503}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Order">
+      <UniqueIdentifier>{627ae05a-081f-4dcc-92d6-488cf850a646}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Agent">
+      <UniqueIdentifier>{c176f2db-85b6-47a3-a78f-40c9ca8bb6ce}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\OrderBook">
+      <UniqueIdentifier>{ea69d4aa-5275-4095-a87b-db8d33b7ac36}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Utility">
+      <UniqueIdentifier>{4fdd33cd-7d90-4b41-98e6-a7e24f9e449f}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Util.h">
+      <Filter>Header Files\Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="Enums.h">
+      <Filter>Header Files\Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="Order.h">
+      <Filter>Header Files\Order</Filter>
+    </ClInclude>
+    <ClInclude Include="Holding.h">
+      <Filter>Header Files\Order</Filter>
+    </ClInclude>
+    <ClInclude Include="Agent.h">
+      <Filter>Header Files\Agent</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Holding.cpp">
+      <Filter>Source Files\Order</Filter>
+    </ClCompile>
+    <ClCompile Include="Order.cpp">
+      <Filter>Source Files\Order</Filter>
+    </ClCompile>
+    <ClCompile Include="main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Agent.cpp">
+      <Filter>Source Files\Agent</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>
