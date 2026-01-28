@@ -4,6 +4,7 @@
 #include <algorithm>
 
 static std::mt19937 generator(std::random_device{}());
+static const double CASH_PRECISION = 0.01;
 
 /* Randomly shuffle a vector */
 template <typename T>

@@ -43,6 +43,8 @@ public:
 
 class OrderBook {
 public:
+	/* Tick price precision decimal points. Above $1 == 0.01, Below $1 == 0.0001 */
+	double tickPrecision;
 	/* Current session of the market */
 	Session session;
 	/* Last traded price */
@@ -116,5 +118,7 @@ private:
 	void returnAssets(std::shared_ptr<Order> order, std::shared_ptr<Agent> agent);
 	/* Clear the specified side's order queue */
 	void clearQueues();
+	/* Set the decimal precision to use based on current price */
+	double setTickPrecision(double price);
 };
 

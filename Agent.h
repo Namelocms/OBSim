@@ -48,8 +48,6 @@ public:
 // ---- Holdings Operations ----
 	/* Update/insert a share in the agent's holdings */
 	void upsertHolding(Holding holding);
-	/* Remove the specified volume from a share [volume=0 -> remove all shares at price] */
-	Holding removeHolding(Holding holding, int volume = 0);
 	/* Remove the given volume of holdings, return the list of holdings objects of the removed shares */
 	std::vector<Holding> removeHoldings(int volume);
 	/* Get the number of shares the Agent is currently holding */
