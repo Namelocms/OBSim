@@ -6,6 +6,7 @@
 #include <numeric>
 
 enum class OrderAction;
+enum class AgentStatus;
 class OrderBook;
 class MatchingEngine;
 class Order;
@@ -17,6 +18,8 @@ public:
 	const std::string id;
 	/* Agent's buying power */
 	double cash;
+	/* Agent's status */
+	AgentStatus status;
 	/* All shares the agent currently holds */
 	std::unordered_map<double, Holding> holdings;
 	/* All open ask orders placed by the agent */
@@ -24,9 +27,9 @@ public:
 	/* All open bid orders placed by the agent */
 	std::unordered_map<std::string, std::shared_ptr<Order>> activeBids;
 	/* The orderbook for the current stock */
-	OrderBook& ob;
+	OrderBook& OB;
 	/* The matching engine */
-	MatchingEngine& me;
+	MatchingEngine& ME;
 
 	Agent() = default;
 	Agent(

@@ -51,6 +51,12 @@
     <ClInclude Include="Agent.h">
       <Filter>Header Files\Agent</Filter>
     </ClInclude>
+    <ClInclude Include="OrderBook.h">
+      <Filter>Header Files\OrderBook</Filter>
+    </ClInclude>
+    <ClInclude Include="MatchingEngine.h">
+      <Filter>Header Files\OrderBook</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Holding.cpp">
@@ -64,6 +70,12 @@
     </ClCompile>
     <ClCompile Include="Agent.cpp">
       <Filter>Source Files\Agent</Filter>
+    </ClCompile>
+    <ClCompile Include="OrderBook.cpp">
+      <Filter>Source Files\OrderBook</Filter>
+    </ClCompile>
+    <ClCompile Include="MatchingEngine.cpp">
+      <Filter>Source Files\OrderBook</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

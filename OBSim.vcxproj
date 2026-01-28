@@ -126,14 +126,18 @@
     <ClInclude Include="Agent.h" />
     <ClInclude Include="Enums.h" />
     <ClInclude Include="Holding.h" />
+    <ClInclude Include="MatchingEngine.h" />
     <ClInclude Include="Order.h" />
+    <ClInclude Include="OrderBook.h" />
     <ClInclude Include="Util.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Agent.cpp" />
     <ClCompile Include="Holding.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="MatchingEngine.cpp" />
     <ClCompile Include="Order.cpp" />
+    <ClCompile Include="OrderBook.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
