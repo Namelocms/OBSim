@@ -12,6 +12,8 @@ class MatchingEngine;
 class Order;
 class Holding;
 
+const double PI = 3.14159265358979323846;
+
 class Agent {
 public:
 	/* Agent's unique ID */
