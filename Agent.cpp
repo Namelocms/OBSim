@@ -16,36 +16,39 @@ void Agent::updateCash(double amt) {
 
 // ---- Holdings Operations ----
 void Agent::upsertHolding(Holding holding) {
-	auto it = this->holdings.find(holding.price);
-	if (it != this->holdings.end()) {
-		this->holdings[holding.price].volume += holding.volume;
-	}
-	else {
-		this->holdings[holding.price] = holding;
+	// Insert new holding if price key does not already exist
+	auto attempt = this->holdings.try_emplace(holding.price, holding);
+	
+	auto it = attempt.first;
+	auto inserted = attempt.second;
+
+	// Not inserted so price key existed, just add volume
+	if (!inserted) {
+		it->second.volume += holding.volume;
 	}
 }
 std::vector<Holding> Agent::removeHoldings(int volume) {
 	std::vector<Holding> removedHoldings;
-	Holding currentHolding;
 
 	while (volume > 0 && !this->holdings.empty()) {
-		currentHolding = holdings.begin()->second;
+		auto it = this->holdings.begin();
+		Holding& currentHolding = it->second;
 
-		// Clean faulty holdings
+		// Clean faulty holdings if there are any
 		if (currentHolding.volume <= 0) {
-			this->holdings.erase(currentHolding.price);
+			this->holdings.erase(it);
 			continue;
 		}
 
 		if (currentHolding.volume <= volume) {
 			// Fully remove holding
-			this->holdings.erase(currentHolding.price);
 			volume -= currentHolding.volume;
-			removedHoldings.push_back(currentHolding);
+			removedHoldings.push_back(std::move(currentHolding));
+			this->holdings.erase(it);
 		}
 		else {
-			this->holdings[currentHolding.price].volume -= volume;
-			removedHoldings.push_back(Holding(currentHolding.price, volume));
+			removedHoldings.emplace_back(currentHolding.price, volume);
+			currentHolding.volume -= volume;
 			volume = 0;
 		}
 	}
@@ -53,15 +56,37 @@ std::vector<Holding> Agent::removeHoldings(int volume) {
 	return removedHoldings;
 }
 int Agent::getTotalHoldings() {
-
+	return std::accumulate(this->holdings.begin(), this->holdings.end(), 0,
+		[](double sum, const auto& kv) {
+			return sum + kv.second.volume;
+		});
 }
 
 // ---- Active Order Operations ----
 void Agent::upsertActiveOrder(std::shared_ptr<Order> order) {
-
+	switch (order->side) {
+	case OrderAction::BID:
+		this->activeBids.insert_or_assign(order->id, std::move(order));
+		break;
+	case OrderAction::ASK:
+		this->activeAsks.insert_or_assign(order->id, std::move(order));
+		break;
+	}
 }
 void Agent::removeActiveOrder(std::shared_ptr<Order> order) {
+	bool orderRemoved = false;
 
+	switch (order->side) {
+	case OrderAction::BID:
+		orderRemoved = this->activeBids.erase(order->id);
+		break;
+	case OrderAction::ASK:
+		orderRemoved = this->activeAsks.erase(order->id);
+		break;
+	}
+
+	if (orderRemoved) { /* Order was removed */ }
+	else { /* Order ID does not exist */ }
 }
 
 // ---- Action Operations ----
