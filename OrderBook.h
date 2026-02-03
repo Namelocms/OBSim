@@ -4,7 +4,8 @@
 #include <cmath>
 #include <numeric>
 #include <chrono>
-#include <queue>
+//#include <queue>
+#include <set>
 #include "Holding.h"
 #include "Order.h" // for order queues
 
@@ -20,7 +21,14 @@ struct PriceTime {
 };
 struct Snapshot {
 	Snapshot() = default;
-
+	double currentPrice = 0.00;
+	double macd = 0.00;
+	double rsi = 0.00;
+	double vwap = 0.00;
+	double sma = 0.00;
+	double spread = 0.00;
+	std::vector<std::shared_ptr<Order>> bids = {};
+	std::vector<std::shared_ptr<Order>> asks = {};
 };
 struct CompareBid {
 public:
@@ -50,13 +58,13 @@ public:
 	/* Last traded price */
 	double currentPrice;
 	/* Number of shares available to trade */
-	int shareFloat;
+	unsigned int shareFloat;
 	/* Log of price movements and their times */
 	std::vector<PriceTime> tickHistory;
-	/* Priority queue for bid limit orders */
-	std::priority_queue<std::shared_ptr<Order>, std::vector<std::shared_ptr<Order>>, CompareBid> bidQueue;
-	/* Priority queue for ask limit orders */
-	std::priority_queue<std::shared_ptr<Order>, std::vector<std::shared_ptr<Order>>, CompareAsk> askQueue;
+	/* Priority set for bid limit orders */
+	std::set<std::shared_ptr<Order>, CompareBid> bidQueue;
+	/* Priority set for ask limit orders */
+	std::set<std::shared_ptr<Order>, CompareAsk> askQueue;
 	/* Log of all orders placed by agents || OrderId: Order */
 	std::unordered_map<std::string, std::shared_ptr<Order>> orderHistory;
 	/* Log of all agents in the sim || AgentId: Agent */
@@ -73,25 +81,23 @@ public:
 	/* Get the best active bid/ask and remove it from the queue */
 	std::shared_ptr<Order> getBest(OrderAction side);
 	/* Get the best n active bid/ask without removing it from the queue */
-	std::vector<std::shared_ptr<Order>> peekBestN(OrderAction side, int n = 1);
+	std::vector<std::shared_ptr<Order>> peekBestN(OrderAction side, unsigned char n = 1);
 	/* Add a new order to the bid/ask queue and orderbook */
 	void addOrder(std::shared_ptr<Order> order);
 	/* Remove an order from the bid/ask queue, update the status to canceled, return assets if applicable */
 	void cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent> agent);
 	/* Order was filled, remove from queue, update status to CLOSED */
-	void fillOrder(std::shared_ptr<Order> order);
-	/* Order was partially filled, update volume, re-add it to queue */
-	void partialFillOrder(std::shared_ptr<Order> order, int volFilled);
+	void fillOrder(std::shared_ptr<Order> order, int volFilled);
 
 // ---- Utility Operations ----
 	/* Make a unique id for an Agent or Order */
 	std::string makeId(ID_TYPE type);
 	/* Get a snapshot of the current state of the Order Book */
-	Snapshot getSnapshot(int depth = 10);
+	Snapshot getSnapshot(unsigned char depth = 10);
 	/* Get current tick count from given start index in tickHistory */
 	int getTick(int startTick = 0);
 	/* Resets the LOB to its initial state */
-	void resetToInitial(double initialPrice, bool clearAgents = false);
+	void resetToInitial(double initialPrice, unsigned int shareFloat = 0, bool clearAgents = false);
 
 private:
 	/* Number of asks in the askQueue */
@@ -107,18 +113,42 @@ private:
 	/* Symbol of the current stock (random) */
 	std::string TICKER_SYMBOL = "NONE";
 
-// ---- Order Operations ----
-	/* Add an order into the bid/ask queue */
-	void addToQueue(std::shared_ptr<Order> order);
-
 // ---- Utility Operations ----
 	/* Creates a random ticker symbol */
 	std::string makeTickerSymbol();
-	/* Return an agent's assets to them after an order is canceled */
-	void returnAssets(std::shared_ptr<Order> order, std::shared_ptr<Agent> agent);
-	/* Clear the specified side's order queue */
-	void clearQueues();
 	/* Set the decimal precision to use based on current price */
 	double setTickPrecision(double price);
+	/* Helper function for removing best order from bid/ask queue */
+	template <typename T>
+	std::shared_ptr<Order> removeBestFrom(T& queue) {
+		while (!queue->empty()) {
+			std::shared_ptr<Order> best = *queue->begin();
+
+			queue->erase(queue->begin());
+
+			if (best->status != OrderStatus::CANCELED) {
+				return best;
+			}
+		}
+		return nullptr;
+	}
+	/* Helper function for peeking the best order(s) from bid/ask queue */
+	template <typename T>
+	std::vector<std::shared_ptr<Order>> peekBestFrom(T& queue, unsigned char n) {
+		std::vector<std::shared_ptr<Order>> bestN;
+
+		auto it = queue.begin();
+		while (it != queue.end() && bestN.size() < n) {
+			std::shared_ptr<Order> order = *it;
+
+			if (order->status != OrderStatus::CANCELED) {
+				bestN.push_back(order);
+			}
+
+			++it;
+		}
+
+		return bestN;
+	}
 };
 

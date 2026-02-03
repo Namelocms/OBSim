@@ -10,11 +10,13 @@ Agent::Agent(std::string id, double cash, AgentStatus status, OrderBook& ob, Mat
 	id(id), cash(cash), status(status), OB(ob), ME(me) { }
 
 // ---- Cash Operations ----
+
 void Agent::updateCash(double amt) {
 	this->cash = roundTo(this->cash + amt, CASH_PRECISION);
 }
 
 // ---- Holdings Operations ----
+
 void Agent::upsertHolding(Holding holding) {
 	// Insert new holding if price key does not already exist
 	auto attempt = this->holdings.try_emplace(holding.price, holding);
@@ -63,6 +65,7 @@ int Agent::getTotalHoldings() {
 }
 
 // ---- Active Order Operations ----
+
 void Agent::upsertActiveOrder(std::shared_ptr<Order> order) {
 	switch (order->side) {
 	case OrderAction::BID:
@@ -90,6 +93,7 @@ void Agent::removeActiveOrder(std::shared_ptr<Order> order) {
 }
 
 // ---- Action Operations ----
+
 void Agent::actRandom() {
 	OrderAction action = this->getRandomAction();
 	OrderType orderType = randomInt(0, 1) ? OrderType::MARKET : OrderType::LIMIT;
@@ -249,6 +253,7 @@ void Agent::hold() {
 }
 
 // ---- Utility Operations ----
+
 void Agent::resetToInitial(double initialCash) {
 	this->cash = initialCash;
 	this->status = AgentStatus::INACTIVE;
