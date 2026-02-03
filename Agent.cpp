@@ -6,8 +6,8 @@
 #include "OrderBook.h"
 #include "MatchingEngine.h"
 
-Agent::Agent(std::string id, double cash, OrderBook& ob, MatchingEngine& me) :
-	id(id), cash(cash), OB(ob), ME(me) {}
+Agent::Agent(std::string id, double cash, AgentStatus status, OrderBook& ob, MatchingEngine& me) :
+	id(id), cash(cash), status(status), OB(ob), ME(me) { }
 
 // ---- Cash Operations ----
 void Agent::updateCash(double amt) {
@@ -90,38 +90,188 @@ void Agent::removeActiveOrder(std::shared_ptr<Order> order) {
 }
 
 // ---- Action Operations ----
-void Agent::act() {
+void Agent::actRandom() {
+	OrderAction action = this->getRandomAction();
+	OrderType orderType = randomInt(0, 1) ? OrderType::MARKET : OrderType::LIMIT;
+	std::shared_ptr<Order> order;
 
+	switch (action) {
+	case OrderAction::BID:
+		switch (orderType) {
+		case OrderType::MARKET:
+			order = this->makeMarketBid();
+			this->ME.matchMarketBid(order);
+			break;
+		case OrderType::LIMIT:
+			order = this->makeLimitBid();
+			this->ME.matchLimitBid(order);
+			break;
+		}
+		break;
+	case OrderAction::ASK:
+		switch (orderType) {
+		case OrderType::MARKET:
+			order = this->makeMarketAsk();
+			this->ME.matchMarketAsk(order);
+			break;
+		case OrderType::LIMIT:
+			order = this->makeLimitAsk();
+			this->ME.matchLimitAsk(order);
+			break;
+		}
+		break;
+	case OrderAction::CANCEL:
+		this->cancelOrder();
+		break;
+	case OrderAction::HOLD:
+		this->hold();
+		break;
+	}
 }
-OrderAction Agent::getAction() {
+OrderAction Agent::getRandomAction() {
+	std::vector<OrderAction> availableActions = { OrderAction::HOLD };
+	int totalHoldings = this->getTotalHoldings();
+	int actionChoice = 0;
+	int numActions = 1;
 
+	if (this->cash >= this->OB.currentPrice) { availableActions.push_back(OrderAction::BID); }
+	if (totalHoldings > 0) { availableActions.push_back(OrderAction::ASK); }
+	if (!this->activeAsks.empty() || !this->activeBids.empty()) { availableActions.push_back(OrderAction::CANCEL); }
+
+	numActions = availableActions.size();
+	if (numActions == 1) { actionChoice = 0; }
+	else { actionChoice = randomInt(0, numActions - 1); }
+
+	return availableActions[actionChoice];
 }
 std::shared_ptr<Order> Agent::makeMarketBid() {
+	int maxPurchasable = int(this->cash / this->OB.currentPrice);
+	if (maxPurchasable < 1) { return nullptr; }
 
+	int chosenVol = randomInt(1, maxPurchasable);
+
+	std::shared_ptr<Order> order = std::make_shared<Order>(
+		this->OB.makeId(ID_TYPE::ORDER),
+		this->id,
+		-1,
+		chosenVol,
+		OrderAction::BID,
+		OrderType::MARKET
+	);
+
+	return order;
 }
 std::shared_ptr<Order> Agent::makeLimitBid() {
+	double chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::BID);
+	int maxPurchasable = int(this->cash / chosenPrice);
+	if (maxPurchasable < 1) { return nullptr; }
 
+	int chosenVol = randomInt(1, maxPurchasable);
+	double totalValue = roundTo(chosenPrice * chosenVol);
+
+	std::shared_ptr<Order> order = std::make_shared<Order>(
+		this->OB.makeId(ID_TYPE::ORDER),
+		this->id,
+		chosenPrice,
+		chosenVol,
+		OrderAction::BID,
+		OrderType::LIMIT
+	);
+
+	this->updateCash(-totalValue);
+
+	return order;
 }
 std::shared_ptr<Order> Agent::makeMarketAsk() {
+	int chosenVol = 1;
+	int totalHoldings = this->getTotalHoldings();
+	if (totalHoldings < 1) { return nullptr; }
+	if (totalHoldings > 1) { chosenVol = randomInt(1, totalHoldings); }
 
+	std::vector<Holding> reservedHoldings = this->removeHoldings(chosenVol);
+
+	std::shared_ptr<Order> order = std::make_shared<Order>(
+		this->OB.makeId(ID_TYPE::ORDER),
+		this->id,
+		-1,
+		chosenVol,
+		OrderAction::ASK,
+		OrderType::MARKET,
+		reservedHoldings
+	);
+
+	return order;
 }
 std::shared_ptr<Order> Agent::makeLimitAsk() {
+	double chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::ASK);
+	int chosenVol = 1;
 
+	int totalHoldings = this->getTotalHoldings();
+	if (totalHoldings < 1) { return nullptr; }
+	if (totalHoldings > 1) { chosenVol = randomInt(1, totalHoldings); }
+
+	std::vector<Holding> reservedHoldings = this->removeHoldings(chosenVol);
+
+	std::shared_ptr<Order> order = std::make_shared<Order>(
+		this->OB.makeId(ID_TYPE::ORDER),
+		this->id,
+		chosenPrice,
+		chosenVol,
+		OrderAction::ASK,
+		OrderType::LIMIT,
+		reservedHoldings
+	);
+
+	return order;
 }
 void Agent::cancelOrder() {
+	bool hasBids = !activeBids.empty();
+	bool hasAsks = !activeAsks.empty();
 
+	if (!hasBids && !hasAsks) { return; }
+	
+	//               check truth           if true        if false->t   f
+	bool side = (hasBids && hasAsks) ? randomInt(0, 1) : (hasBids ? 0 : 1);
+
+	if (side) {
+		auto it = activeAsks.begin();
+		std::advance(it, randomInt(0, static_cast<int>(activeAsks.size() - 1)));
+		this->OB.cancelOrder(it->second, shared_from_this());
+	}
+	else {
+		auto it = activeBids.begin();
+		std::advance(it, randomInt(0, static_cast<int>(activeBids.size() - 1)));
+		this->OB.cancelOrder(it->second, shared_from_this());
+	}
 }
 void Agent::hold() {
-
+	return;
 }
 
 // ---- Utility Operations ----
-void Agent::resetToInitial(double initialCash = 100.00) {
-
+void Agent::resetToInitial(double initialCash) {
+	this->cash = initialCash;
+	this->status = AgentStatus::INACTIVE;
+	this->holdings.clear();
+	this->activeAsks.clear();
+	this->activeBids.clear();
 }
-double Agent::getBetaPrice(double currentPrice, OrderAction side, double a = 2.0, double b = 5.0, double epsilon) {
+double Agent::getBetaPrice(double currentPrice, OrderAction side, double a, double b, double epsilon) {
+	double x, discount, premium;
+	double maxVariance = this->getMaxVariance(currentPrice);
 
+	switch (side) {
+	case OrderAction::BID:
+		x = sampleBeta(a, b);
+		discount = x * maxVariance;
+		return roundTo(std::max(currentPrice * (1 - discount), epsilon));
+	case OrderAction::ASK:
+		x = sampleBeta(a, b);
+		premium = x * maxVariance;
+		return roundTo(currentPrice * (1 + premium));
+	}
+	return roundTo(currentPrice);
 }
-double Agent::getMaxVariance(double price, double scale = 0.10, double decayRate = 0.25, double amplitude = 0.10, double frequency = PI * 2) {
-
+double Agent::getMaxVariance(double price, double scale, double decayRate, double amplitude, double frequency) {
+	return scale * (pow(price, -decayRate)) * (1 + (amplitude * sin(frequency * log(price))));
 }

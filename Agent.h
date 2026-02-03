@@ -14,7 +14,7 @@ class Holding;
 
 const double PI = 3.14159265358979323846;
 
-class Agent {
+class Agent : public std::enable_shared_from_this<Agent> {
 public:
 	/* Agent's unique ID */
 	const std::string id;
@@ -37,6 +37,7 @@ public:
 	Agent(
 		std::string id,
 		double cash,
+		AgentStatus status,
 		OrderBook& ob,
 		MatchingEngine& me
 	);
@@ -61,9 +62,9 @@ public:
 
 // ---- Action Operations ----
 	/* Execute a chosen action */
-	void act();
+	void actRandom();
 	/* Choose a random OrderAction given the agent's current holdings and cash */
-	OrderAction getAction();
+	OrderAction getRandomAction();
 	/* Make a random market bid order */
 	std::shared_ptr<Order> makeMarketBid();
 	/* Make a random limit bid order */
