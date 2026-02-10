@@ -40,6 +40,7 @@ OrderBook OB = OrderBook(START_PRICE);
 MatchingEngine ME = MatchingEngine(OB);
 
 // Initialize Agents and add them to the OrderBook
+// Edit this to set up environment as needed
 for (int i = 0; i < NUM_AGENTS; ++i) {
   std::shared_ptr<Agent> agent = std::make_shared<Agent>(
     OB.makeId(ID_TYPE::AGENT),
@@ -49,6 +50,7 @@ for (int i = 0; i < NUM_AGENTS; ++i) {
     ME
   );
 
+// What shares the agents starts with, price is above current price with ASK and below with BID
   agent->upsertHolding(Holding(agent->getBetaPrice(ob.currentPrice, OrderAction::ASK), 10));
   agent->upsertHolding(Holding(agent->getBetaPrice(ob.currentPrice, OrderAction::BID), 10));
 
