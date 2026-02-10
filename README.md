@@ -63,3 +63,5 @@ for (int x = 0; x < STEPS; ++x) {
 }
 
 ```
+## Benchmarks
+For detailed performance benchmarks, look at the `Benchmarks.md` file
