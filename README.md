@@ -1,4 +1,6 @@
 # OBSim
+*Created for high-frequency trading simulations and agent-based market modeling*
+
 A high-performance C++ matching engine designed for financial simulations. The system supports multiple agent behaviors, limit/market orders, and price-time priority matching with an efficient O(log N) architecture.
 
 ## Performance Overview
