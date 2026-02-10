@@ -1,10 +1,10 @@
-#include "Agent.h"
-#include "Enums.h"
-#include "Util.h"
-#include "Order.h"
-#include "Holding.h"
-#include "OrderBook.h"
-#include "MatchingEngine.h"
+#include "include/Agent.h"
+#include "include/Enums.h"
+#include "include/Util.h"
+#include "include/Order.h"
+#include "include/Holding.h"
+#include "include/OrderBook.h"
+#include "include/MatchingEngine.h"
 
 Agent::Agent(std::string id, double cash, AgentStatus status, OrderBook& ob, MatchingEngine& me) :
 	id(id), cash(cash), status(status), OB(ob), ME(me) { }

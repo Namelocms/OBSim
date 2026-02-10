@@ -3,6 +3,32 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+# Workspace settings
+.vscode/
+
+# CMake build folders & files
+/CMakeCache.txt
+/CMakeFiles/
+/cmake_install.cmake
+/Makefile
+/build/
+/Debug/
+/Release/
+
+# Visual Studio CMake settings (user-specific)
+CMakeSettings.json
+
+# Solution and project files (generated)
+*.sln
+*.vcxproj*
+*.user
+*.opensdf
+*.sdf
+*.ipch
+*.filters
+*.VC.db
+*.VC.opendb
+
 # User-specific files
 *.rsuser
 *.suo

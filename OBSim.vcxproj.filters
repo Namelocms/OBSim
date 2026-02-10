@@ -34,6 +34,12 @@
     <Filter Include="Header Files\Utility">
       <UniqueIdentifier>{4fdd33cd-7d90-4b41-98e6-a7e24f9e449f}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\App">
+      <UniqueIdentifier>{b39854dc-1303-4a04-903f-d0554ea1b65b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\App">
+      <UniqueIdentifier>{126c7499-0124-4040-b971-ed31438a2bc1}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Util.h">
@@ -57,6 +63,9 @@
     <ClInclude Include="MatchingEngine.h">
       <Filter>Header Files\OrderBook</Filter>
     </ClInclude>
+    <ClInclude Include="ConsoleApp.h">
+      <Filter>Header Files\App</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Holding.cpp">
@@ -77,10 +86,16 @@
     <ClCompile Include="MatchingEngine.cpp">
       <Filter>Source Files\OrderBook</Filter>
     </ClCompile>
+    <ClCompile Include="ConsoleApp.cpp">
+      <Filter>Source Files\App</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="Benchmarks.md">
       <Filter>Source Files</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="CMakeLists.txt" />
   </ItemGroup>
 </Project>

@@ -1,7 +1,7 @@
-#include "OrderBook.h"
-#include "Enums.h"
-#include "Agent.h"
-#include "Util.h"
+#include "include/OrderBook.h"
+#include "include/Enums.h"
+#include "include/Agent.h"
+#include "include/Util.h"
 
 OrderBook::OrderBook(double currentPrice) : currentPrice(currentPrice) {
 	this->setTickPrecision(currentPrice);

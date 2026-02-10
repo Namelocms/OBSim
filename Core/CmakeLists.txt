@@ -1,0 +1,17 @@
+add_library(Simulator
+	Agent.cpp
+	Holding.cpp
+	MatchingEngine.cpp
+	Order.cpp
+	OrderBook.cpp
+)
+
+target_include_directories(Simulator
+	PUBLIC
+		${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_features(Simulator
+	PUBLIC
+		cxx_std_20
+)
