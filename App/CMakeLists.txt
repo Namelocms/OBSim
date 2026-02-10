@@ -1,7 +1,7 @@
-add_executable(ConsoleApp
+add_executable(OBSim_ConsoleApp
 	main.cpp
 )
-target_link_libraries(ConsoleApp
+target_link_libraries(OBSim_ConsoleApp
 	PRIVATE
 		Simulator
 )
