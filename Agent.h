@@ -87,9 +87,9 @@ public:
 	* Has a nice distribution just a little past/before the current price is where most orders will be placed.
 	* a = Higher favors right side (larger x).
 	* b = Higher favors left side (smaller x).
-	* epsilon = Minimum possible price (for bids only).
+	* epsilon = Minimum possible price.
 	*/
-	double getBetaPrice(double currentPrice, OrderAction side, double a = 2.0, double b = 5.0, double epsilon);
+	double getBetaPrice(double currentPrice, OrderAction side, double a = 2.0, double b = 5.0, double epsilon = 0.0001);
 
 private:
 	/* Get the max variance in price (how much the computed price will differ from passed price)

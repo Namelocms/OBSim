@@ -234,7 +234,6 @@ void Agent::cancelOrder() {
 
 	if (!hasBids && !hasAsks) { return; }
 	
-	//               check truth           if true        if false->t   f
 	bool side = (hasBids && hasAsks) ? randomInt(0, 1) : (hasBids ? 0 : 1);
 
 	if (side) {
@@ -269,13 +268,13 @@ double Agent::getBetaPrice(double currentPrice, OrderAction side, double a, doub
 	case OrderAction::BID:
 		x = sampleBeta(a, b);
 		discount = x * maxVariance;
-		return roundTo(std::max(currentPrice * (1 - discount), epsilon));
+		return roundTo(std::max(currentPrice * (1 - discount), epsilon), this->OB.tickPrecision);
 	case OrderAction::ASK:
 		x = sampleBeta(a, b);
 		premium = x * maxVariance;
-		return roundTo(currentPrice * (1 + premium));
+		return roundTo(currentPrice * (1 + premium), this->OB.tickPrecision);
 	}
-	return roundTo(currentPrice);
+	return roundTo(currentPrice, this->OB.tickPrecision);
 }
 double Agent::getMaxVariance(double price, double scale, double decayRate, double amplitude, double frequency) {
 	return scale * (pow(price, -decayRate)) * (1 + (amplitude * sin(frequency * log(price))));

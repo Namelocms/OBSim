@@ -139,6 +139,12 @@
     <ClCompile Include="Order.cpp" />
     <ClCompile Include="OrderBook.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="Benchmarks.md">
+      <SubType>
+      </SubType>
+    </None>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

@@ -78,4 +78,9 @@
       <Filter>Source Files\OrderBook</Filter>
     </ClCompile>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="Benchmarks.md">
+      <Filter>Source Files</Filter>
+    </None>
+  </ItemGroup>
 </Project>

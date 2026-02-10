@@ -36,7 +36,7 @@ public:
 		if (o1->price == o2->price) {
 			return o1->timestamp > o2->timestamp; // earlier timestamp first
 		}
-		return o1->price < o2->price; // higher price first
+		return o1->price > o2->price; // higher price first
 	}
 };
 struct CompareAsk {
@@ -45,7 +45,7 @@ public:
 		if (o1->price == o2->price) {
 			return o1->timestamp > o2->timestamp; // earlier timestamp first
 		}
-		return o1->price > o2->price; // lower price first
+		return o1->price < o2->price; // lower price first
 	}
 };
 
@@ -90,6 +90,8 @@ public:
 	void fillOrder(std::shared_ptr<Order> order, int volFilled);
 
 // ---- Utility Operations ----
+	/* Update current price and tick precision */
+	void updateCurrentPrice(double newPrice);
 	/* Make a unique id for an Agent or Order */
 	std::string makeId(ID_TYPE type);
 	/* Get a snapshot of the current state of the Order Book */
@@ -117,14 +119,14 @@ private:
 	/* Creates a random ticker symbol */
 	std::string makeTickerSymbol();
 	/* Set the decimal precision to use based on current price */
-	double setTickPrecision(double price);
+	void setTickPrecision(double price);
 	/* Helper function for removing best order from bid/ask queue */
 	template <typename T>
 	std::shared_ptr<Order> removeBestFrom(T& queue) {
-		while (!queue->empty()) {
-			std::shared_ptr<Order> best = *queue->begin();
+		while (!queue.empty()) {
+			std::shared_ptr<Order> best = *queue.begin();
 
-			queue->erase(queue->begin());
+			queue.erase(queue.begin());
 
 			if (best->status != OrderStatus::CANCELED) {
 				return best;

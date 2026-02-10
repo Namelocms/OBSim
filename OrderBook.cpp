@@ -40,7 +40,7 @@ void OrderBook::cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent>
 	order->status = OrderStatus::CANCELED;
 	if (order->side == OrderAction::BID) {
 		agent->updateCash(order->price * order->volume);
-		agent->activeBids.erase(order->id);
+		agent->removeActiveOrder(order);
 		this->bidQueue.erase(order);
 		this->numBids--;
 	}
@@ -49,7 +49,7 @@ void OrderBook::cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent>
 		for (Holding h : returnableHoldings) {
 			agent->upsertHolding(h);
 		}
-		agent->activeAsks.erase(order->id);
+		agent->removeActiveOrder(order);
 		this->askQueue.erase(order);
 		this->numAsks--;
 	}
@@ -57,22 +57,27 @@ void OrderBook::cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent>
 void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 	if (order == nullptr) { return; }
 
+	std::shared_ptr<Agent> agent = this->agents[order->agentId];
+
 	order->volume -= volFilled;
 	if (order->volume == 0) {
 		order->status = OrderStatus::CLOSED;
 		if (order->side == OrderAction::BID) {
-			this->bidQueue.erase(order);
 			this->numBids--; 
 		}
-		else { 
-			this->askQueue.erase(order);
+		else {
 			this->numAsks--; 
 		}
+		agent->removeActiveOrder(order);
 	}
 }
 
 // ---- Utility Operations ----
 
+void OrderBook::updateCurrentPrice(double newPrice) {
+	this->currentPrice = newPrice;
+	this->setTickPrecision(this->currentPrice);
+}
 std::string OrderBook::makeId(ID_TYPE type) {
 	std::string newId = "";
 	int numChars = 0;
@@ -111,13 +116,13 @@ Snapshot OrderBook::getSnapshot(unsigned char depth) {
 
 	return snap;
 }
-int OrderBook::getTick(int startTick = 0) {
+int OrderBook::getTick(int startTick) {
 	int totalTicks = this->tickHistory.size() - 1;
 	return totalTicks - startTick;
 }
 void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, bool clearAgents) {
 	this->currentPrice = (initialPrice <= 0.00) ? -1.00 * (initialPrice - 0.01) : initialPrice;
-	this->tickPrecision = setTickPrecision(initialPrice);
+	setTickPrecision(initialPrice);
 	this->shareFloat = (shareFloat == 0) ? randomInt(100'000, 100'000'000) : shareFloat;
 	this->tickHistory.clear();
 	this->orderHistory.clear();
@@ -134,7 +139,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	}
 }
 
-// ---- Utility Operations ----
+// ---- Private Utility Operations ----
 
 std::string OrderBook::makeTickerSymbol() {
 	std::string symbol = "";
@@ -145,6 +150,6 @@ std::string OrderBook::makeTickerSymbol() {
 
 	return symbol;
 }
-double OrderBook::setTickPrecision(double price) {
+void OrderBook::setTickPrecision(double price) {
 	this->tickPrecision = (price < 1.00) ? 0.0001 : 0.01;
 }
