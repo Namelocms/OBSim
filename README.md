@@ -36,7 +36,7 @@ It is recommended to create an **out-of-source build** to keep build files separ
 
 ### Prerequisites
 
-- CMake >= 3.20
+- CMake >= 3.31
 - A C++ compiler (Visual Studio 2022 or later on Windows, or GCC/Clang on Linux/macOS)
 
 ### Recommended Build (Windows / Visual Studio)
