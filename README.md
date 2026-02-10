@@ -1,7 +1,7 @@
 # OBSim
 *Created for high-frequency trading simulations and agent-based market modeling*
 
-A high-performance C++ matching engine designed for financial simulations. The system supports multiple agent behaviors, limit/market orders, and price-time priority matching with an efficient O(log N) architecture.
+A high-performance C++ matching engine designed for financial simulations. The system currently supports random agent behaviour, limit/market orders, and price-time priority matching with an efficient O(log N) architecture.
 
 ## Performance Overview
 *   **Throughput:** ~1.3 Million actions per second.
@@ -22,9 +22,64 @@ The engine utilizes a non-destructive iterator pattern to match crossing orders:
 *   **Order Lookup:** An `unordered_map` linking Order IDs to pointers for immediate O(log N) cancellation.
 
 ## Technical Specifications
-*   **Language:** C++11 / C++14 / C++17 Compatible.
+*   **Language:** C++ 14 / C++ 17 / C++ 20 Compatible.
 *   **Standard Library:** Heavy use of `<chrono>` for timing (for now), `<memory>` for smart pointers, and `<set>` for sorted order management.
-*   **Recommended Build:** Release x64 with Microsoft Visual Studio.
+## Building OBSim
+
+This project uses **CMake** to generate builds for multiple platforms.  
+It is recommended to create an **out-of-source build** to keep build files separate from source.
+
+- Use **Release** for better performance
+- Use **Debug** for testing or development
+- Headers and source files are all in OBSim/Core and OBSim/App
+- The simulation logic is in a library (OBSim::Core) and the console UI links to it.
+
+### Prerequisites
+
+- CMake >= 3.20
+- A C++ compiler (Visual Studio 2022 or later on Windows, or GCC/Clang on Linux/macOS)
+
+### Recommended Build (Windows / Visual Studio)
+
+1. Open a terminal (PowerShell / Command Prompt)
+2. Create and enter a build directory:
+
+```bash
+cd D:\OBSimProject\OBSim
+mkdir build
+cd build
+```
+##### Generate Visual Studio Project Files
+```bash
+cmake -G "Visual Studio 17 2022" ..
+```
+##### Build the Project (choose configuration):
+```bash
+cmake --build . --config Release
+```
+##### Executable Location
+```bash
+build/Release/ConsoleApp.exe
+```
+
+### Recommended Build (Linux / macOS)
+##### Create and enter a build directory:
+```bash
+mkdir build
+cd build
+```
+##### Run CMake
+```bash
+cmake -DCMAKE_BUILD_TYPE=Release ..
+```
+##### Build
+```bash
+cmake --build .
+```
+##### Executable Location
+```bash
+build/ConsoleApp
+```
 
 ## Usage Example
 ```cpp
