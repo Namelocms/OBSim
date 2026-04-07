@@ -15,5 +15,5 @@ int main() {
 	bool isRunning = true;
 
 	const double START_PRICE = 1.00;
-
+	std::cout << "OK" << std::endl;
 }

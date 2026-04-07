@@ -12,6 +12,7 @@ void populateOrderBook(int numAgents, double startCash, OrderBook& ob, MatchingE
 	for (int i = 0; i < numAgents; ++i) {
 		std::shared_ptr<Agent> agent = std::make_shared<Agent>(
 			ob.makeId(ID_TYPE::AGENT),
+            225, // avg human reaction time
 			startCash,
 			AgentStatus::ACTIVE,
 			ob,

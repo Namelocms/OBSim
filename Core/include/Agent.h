@@ -18,6 +18,8 @@ class Agent : public std::enable_shared_from_this<Agent> {
 public:
 	/* Agent's unique ID */
 	const std::string id;
+	/* Agent's minimum reaction time in milliseconds */
+	unsigned int reactionTime;
 	/* Agent's buying power */
 	double cash;
 	/* Agent's status */
@@ -36,6 +38,7 @@ public:
 	Agent() = default;
 	Agent(
 		std::string id,
+		unsigned int reactionTime,
 		double cash,
 		AgentStatus status,
 		OrderBook& ob,
