@@ -3,8 +3,23 @@
 #include <vector>
 #include <algorithm>
 
-static std::mt19937 generator(std::random_device{}());
-static const double CASH_PRECISION = 0.01;
+inline std::mt19937 generator(std::random_device{}());
+inline const double CASH_PRECISION = 0.01;
+
+/* Random generator will use the given seed
+*****************IMPORTANT**********************
+MUST BE CALLED BEFORE ANY USAGE OF THE GENERATOR TO SET CORRECTLY
+*/
+inline void setSeed(unsigned int seed) {
+    generator.seed(seed);
+}
+/* Random generator will use a random seed
+*****************IMPORTANT**********************
+MUST BE CALLED BEFORE ANY USAGE OF THE GENERATOR TO SET CORRECTLY
+*/
+inline void setRandomSeed() {
+    generator.seed(std::random_device{}());
+}
 
 /* Randomly shuffle a vector */
 template <typename T>

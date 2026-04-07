@@ -39,7 +39,7 @@ void info(OrderBook& OB) {
 	}
 }
 
-int main() {
+int MVP_Benchmark_main() {
     const int NUM_RUNS = 10;        // How many times to repeat the whole test
     int STEPS = 390;         // Steps per simulation
     int NUM_AGENTS = 100;

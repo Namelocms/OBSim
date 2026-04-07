@@ -3,8 +3,11 @@
 #include "include/Agent.h"
 #include "include/Util.h"
 
-OrderBook::OrderBook(double currentPrice) : currentPrice(currentPrice) {
+OrderBook::OrderBook(double currentPrice, unsigned int shareFloat) : currentPrice(currentPrice), shareFloat(shareFloat) {
 	this->setTickPrecision(currentPrice);
+	this->shareFloat = (shareFloat == 0) ? randomInt(100'000, 100'000'000) : shareFloat;
+	this->TICKER_SYMBOL = this->makeTickerSymbol();
+	this->session = Session::PREMARKET;
 }
 
 // ---- Agent Operations ----
@@ -108,7 +111,12 @@ Snapshot OrderBook::getSnapshot(unsigned char depth) {
 	snap.currentPrice = this->currentPrice;
 	snap.bids = this->peekBestN(OrderAction::BID, depth);
 	snap.asks = this->peekBestN(OrderAction::ASK, depth);
-	snap.spread = snap.asks[0]->price - snap.bids[0]->price;
+	if (!snap.asks.empty() && !snap.bids.empty()) {
+		snap.spread = snap.asks[0]->price - snap.bids[0]->price;
+	}
+	else {
+		snap.spread = 0.0;
+	}
 	snap.macd = 0.00;// TODO
 	snap.rsi = 0.00; // TODO
 	snap.vwap = 0.00;// TODO
@@ -131,7 +139,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->numAsks = 0;
 	this->numBids = 0;
 	this->TICKER_SYMBOL = this->makeTickerSymbol();
-	this->session = Session::CLOSED;
+	this->session = Session::PREMARKET;
 	if (clearAgents) {
 		this->nextOrderId = 1;
 		this->nextAgentId = 1;

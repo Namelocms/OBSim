@@ -4,7 +4,7 @@ add_library(Simulator
 	MatchingEngine.cpp
 	Order.cpp
 	OrderBook.cpp
-)
+ )
 
 target_include_directories(Simulator
 	PUBLIC

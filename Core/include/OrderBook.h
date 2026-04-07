@@ -71,7 +71,7 @@ public:
 	std::unordered_map<std::string, std::shared_ptr<Agent>> agents;
 
 	OrderBook() = default;
-	OrderBook(double currentPrice);
+	OrderBook(double currentPrice, unsigned int shareFloat = 0);
 
 // ---- Agent Operations ----
 	/* Update or insert an agent to the agents map */
