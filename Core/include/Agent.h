@@ -19,7 +19,7 @@ public:
 	/* Agent's unique ID */
 	const std::string id;
 	/* Agent's minimum reaction time in milliseconds */
-	unsigned int reactionTime;
+	long long reactionTime;
 	/* Agent's buying power */
 	double cash;
 	/* Agent's status */
@@ -38,7 +38,7 @@ public:
 	Agent() = default;
 	Agent(
 		std::string id,
-		unsigned int reactionTime,
+		long long reactionTime,
 		double cash,
 		AgentStatus status,
 		OrderBook& ob,
