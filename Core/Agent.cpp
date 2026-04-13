@@ -6,7 +6,7 @@
 #include "include/OrderBook.h"
 #include "include/MatchingEngine.h"
 
-Agent::Agent(std::string id, long long reactionTime, double cash, AgentStatus status, OrderBook& ob, MatchingEngine& me) :
+Agent::Agent(std::string id, double reactionTime, double cash, AgentStatus status, OrderBook& ob, MatchingEngine& me) :
 	id(id), reactionTime(reactionTime), cash(cash), status(status), OB(ob), ME(me) { }
 
 // ---- Cash Operations ----

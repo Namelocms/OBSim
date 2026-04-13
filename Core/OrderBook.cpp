@@ -73,6 +73,7 @@ void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 		}
 		agent->removeActiveOrder(order);
 	}
+	this->tickHistory.push_back(PriceTime(this->currentPrice));
 }
 
 // ---- Utility Operations ----
@@ -125,7 +126,7 @@ Snapshot OrderBook::getSnapshot(unsigned char depth) {
 	return snap;
 }
 int OrderBook::getTick(int startTick) {
-	int totalTicks = this->tickHistory.size() - 1;
+	int totalTicks = this->tickHistory.size();
 	return totalTicks - startTick;
 }
 void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, bool clearAgents) {
