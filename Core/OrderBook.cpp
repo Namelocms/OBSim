@@ -5,6 +5,7 @@
 
 OrderBook::OrderBook(double currentPrice, unsigned int shareFloat) : currentPrice(currentPrice), shareFloat(shareFloat) {
 	this->setTickPrecision(currentPrice);
+	this->tickCount = 0;
 	this->shareFloat = (shareFloat == 0) ? randomInt(100'000, 100'000'000) : shareFloat;
 	this->TICKER_SYMBOL = this->makeTickerSymbol();
 	this->session = Session::PREMARKET;
@@ -27,7 +28,7 @@ std::vector<std::shared_ptr<Order>> OrderBook::peekBestN(OrderAction side, unsig
 void OrderBook::addOrder(std::shared_ptr<Order> order) {
 	if (order == nullptr) { return; }
 
-	this->orderHistory.emplace(order->id, order);
+	//this->orderHistory.emplace(order->id, order);
 	if (order->side == OrderAction::BID) {
 		this->bidQueue.insert(order);
 		this->numBids++;
@@ -72,8 +73,9 @@ void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 			this->numAsks--; 
 		}
 		agent->removeActiveOrder(order);
+		this->tickCount++;
+		this->tickHistory.push_back(PriceTime(this->currentPrice));
 	}
-	this->tickHistory.push_back(PriceTime(this->currentPrice));
 }
 
 // ---- Utility Operations ----
@@ -134,7 +136,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	setTickPrecision(initialPrice);
 	this->shareFloat = (shareFloat == 0) ? randomInt(100'000, 100'000'000) : shareFloat;
 	this->tickHistory.clear();
-	this->orderHistory.clear();
+	//this->orderHistory.clear();
 	this->bidQueue.clear();
 	this->askQueue.clear();
 	this->numAsks = 0;

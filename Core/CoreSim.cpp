@@ -22,7 +22,7 @@ void CoreSim::run(SimClock& clock) {
 	clock.start();
 	this->isRunning = true;
 	this->shouldGetSnapshot = false;
-	unsigned int lastTick = 0;
+	long long lastTick = 0;
 
 	while (this->isRunning) {
 		
@@ -60,16 +60,18 @@ void CoreSim::run(SimClock& clock) {
 			clock.pause();
 		}
 
-		if (OB.getTick(lastTick) >= 12) {
+		// Redundant
+		if (OB.tickCount != lastTick) {
 			this->shouldGetSnapshot = true;
 		}
 
 		// Capture Snapshot, UI update
 		if (this->shouldGetSnapshot) {
 			Snapshot snap = OB.getSnapshot();
-			std::cout << snap.currentPrice << " @ " << OB.getTick() << " -- " << clock.simTimeMs << std::endl;
+			std::cout << snap.currentPrice << " @ " << OB.tickCount << " -- " << clock.simTimeMs << std::endl;
+
 			this->shouldGetSnapshot = false;
-			lastTick = OB.getTick();
+			lastTick = OB.tickCount;
 		}
 		
 	}

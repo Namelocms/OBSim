@@ -58,6 +58,8 @@ public:
 	double currentPrice;
 	/* Number of shares available to trade */
 	unsigned int shareFloat;
+	/* Total amount of ticks from the start */
+	long long tickCount;
 	/* Log of price movements and their times */
 	std::vector<PriceTime> tickHistory;
 	/* Priority set for bid limit orders */
@@ -65,7 +67,7 @@ public:
 	/* Priority set for ask limit orders */
 	std::set<std::shared_ptr<Order>, CompareAsk> askQueue;
 	/* Log of all orders placed by agents || OrderId: Order */
-	std::unordered_map<std::string, std::shared_ptr<Order>> orderHistory;
+	//std::unordered_map<std::string, std::shared_ptr<Order>> orderHistory;
 	/* Log of all agents in the sim || AgentId: Agent */
 	std::unordered_map<std::string, std::shared_ptr<Agent>> agents;
 

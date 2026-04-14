@@ -65,6 +65,12 @@ void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
 
 	order->status = (order->volume > 0) ? OrderStatus::CANCELED : OrderStatus::CLOSED;
 
+	// Handle tick counting if bid order was filled
+	if (order->volume == 0) {
+		OB.tickCount++;
+		OB.tickHistory.push_back(PriceTime(OB.currentPrice));
+	}
+
 	// Volume Weighted Average Price (VWAP) of shares bought for order
 	totalVolume = order->entryVolume - order->volume;
 	if (totalVolume > 0) {
@@ -132,6 +138,10 @@ void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
 	}
 	else {
 		order->status = OrderStatus::CLOSED;
+
+		// Handle tick counting if bid order was filled
+		OB.tickCount++;
+		OB.tickHistory.push_back(PriceTime(OB.currentPrice));
 	}
 }
 
@@ -196,6 +206,10 @@ void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
 	}
 	else {
 		order->status = OrderStatus::CLOSED;
+
+		// Handle tick counting if bid order was filled
+		OB.tickCount++;
+		OB.tickHistory.push_back(PriceTime(OB.currentPrice));
 	}
 
 	// Volume Weighted Average Price (VWAP) of shares bought for order
@@ -258,6 +272,10 @@ void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
 	}
 	else {
 		order->status = OrderStatus::CLOSED;
+
+		// Handle tick counting if bid order was filled
+		OB.tickCount++;
+		OB.tickHistory.push_back(PriceTime(OB.currentPrice));
 	}
 }
 
