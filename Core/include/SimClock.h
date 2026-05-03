@@ -48,4 +48,10 @@ public:
         step.store(true);
         paused.store(false);
     }
+
+    void reset() {
+        step.store(false);
+        paused.store(false);
+        simTimeMs = 0.0;
+    }
 };

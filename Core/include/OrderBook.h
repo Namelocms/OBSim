@@ -7,6 +7,7 @@
 #include <set>
 #include "Holding.h"
 #include "Order.h" // for order queues
+#include "Snapshot.h"
 
 class Agent;
 enum class OrderAction;
@@ -17,17 +18,6 @@ enum class Session;
 struct PriceTime {
 	double price;
 	std::time_t time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-};
-struct Snapshot {
-	Snapshot() = default;
-	double currentPrice = 0.00;
-	double macd = 0.00;
-	double rsi = 0.00;
-	double vwap = 0.00;
-	double sma = 0.00;
-	double spread = 0.00;
-	std::vector<std::shared_ptr<Order>> bids = {};
-	std::vector<std::shared_ptr<Order>> asks = {};
 };
 struct CompareBid {
 public:

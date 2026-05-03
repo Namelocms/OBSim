@@ -1,3 +1,4 @@
+#pragma once
 #include <queue>
 #include <string>
 #include <memory>
@@ -5,6 +6,11 @@
 #include <vector>
 #include <iostream>
 #include <thread>
+#include <functional>
+
+#include "OrderBook.h"
+#include "MatchingEngine.h"
+#include "LogEntry.h"
 
 class Agent;
 class OrderBook;
@@ -12,11 +18,11 @@ class MatchingEngine;
 class SimClock;
 
 struct Config {
-    unsigned int seed;
-    unsigned int initializationTicks;
-    unsigned short agentStartCount;
-    unsigned int obShareFloat;
-    double obStartPrice;
+    unsigned int seed = 1;
+    unsigned int initializationTicks = 100;
+    unsigned short agentStartCount = 100;
+    unsigned int obShareFloat = 100'000;
+    double obStartPrice = 1.00;
 };
 
 struct EventCall {
@@ -36,6 +42,10 @@ class CoreSim {
 public:
     bool isRunning;
     bool shouldGetSnapshot;
+    OrderBook OB;
+    MatchingEngine ME = MatchingEngine(this->OB);
+    std::function<void(LogEntry)> onLog;
+    std::function<void()> onTick;
     std::priority_queue<EventCall, std::vector<EventCall>, CompareEventCalls> eventCallQueue;
 
     // ---- Main Simulation Loop ----
@@ -44,8 +54,8 @@ public:
 
     // ---- Simulation Initialization Functions ----
 
-    void initAgents(unsigned short _agentStartCount, OrderBook& OB, MatchingEngine& ME);
-    void initMarket(unsigned int _tickCount, OrderBook& OB, SimClock& clock);
+    void initAgents(unsigned short _agentStartCount);
+    void initMarket(unsigned int _tickCount, SimClock& clock);
 
     // ---- Event Functions ----
 

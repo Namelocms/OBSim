@@ -4,7 +4,7 @@ add_library(Simulator
 	MatchingEngine.cpp
 	Order.cpp
 	OrderBook.cpp
-  "include/CoreSim.h" "CoreSim.cpp" "include/SimClock.h")
+  "include/CoreSim.h" "CoreSim.cpp" "include/SimClock.h" "include/Snapshot.h")
 
 target_include_directories(Simulator
 	PUBLIC

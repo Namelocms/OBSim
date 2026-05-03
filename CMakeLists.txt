@@ -10,6 +10,7 @@ FetchContent_Declare(ftxui
 )
 
 FetchContent_MakeAvailable(ftxui)
+message(STATUS "FTXUI source dir: ${ftxui_SOURCE_DIR}")
 
 add_subdirectory(Core)
 add_subdirectory(App)

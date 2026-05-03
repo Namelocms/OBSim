@@ -136,6 +136,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	setTickPrecision(initialPrice);
 	this->shareFloat = (shareFloat == 0) ? randomInt(100'000, 100'000'000) : shareFloat;
 	this->tickHistory.clear();
+	this->tickCount = 0;
 	//this->orderHistory.clear();
 	this->bidQueue.clear();
 	this->askQueue.clear();

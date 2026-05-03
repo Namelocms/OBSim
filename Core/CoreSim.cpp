@@ -1,6 +1,4 @@
 #include "include/CoreSim.h"
-#include "OrderBook.h"
-#include "MatchingEngine.h"
 #include "include/Agent.h"
 #include "include/Holding.h"
 #include "include/Enums.h"
@@ -10,14 +8,18 @@
 // ---- Main Simulation Loop ----
 
 void CoreSim::run(SimClock& clock) {
-	OrderBook OB = OrderBook(this->parameters.obStartPrice, this->parameters.obShareFloat);
-	MatchingEngine ME = MatchingEngine(OB);
-	
-	std::cout << "Initializing Agents..." << std::endl;
-	this->initAgents(this->parameters.agentStartCount, OB, ME);
+	// Clear stale state from any previous run
+	while (!this->eventCallQueue.empty()) this->eventCallQueue.pop();
+	this->isRunning = false;
+	clock.reset();
 
-	std::cout << "Initializing Market..." << std::endl;
-	this->initMarket(this->parameters.initializationTicks, OB, clock);
+	this->OB = OrderBook(this->parameters.obStartPrice, this->parameters.obShareFloat);
+	
+	//std::cout << "Initializing Agents..." << std::endl;
+	this->initAgents(this->parameters.agentStartCount);
+
+	//std::cout << "Initializing Market..." << std::endl;
+	this->initMarket(this->parameters.initializationTicks, clock);
 
 	clock.start();
 	this->isRunning = true;
@@ -38,12 +40,13 @@ void CoreSim::run(SimClock& clock) {
 
 		const EventCall& nextEventCall = this->eventCallQueue.top();
 
-		std::shared_ptr<Agent> agent = OB.agents[nextEventCall.agentId];
+		std::shared_ptr<Agent> agent = this->OB.agents[nextEventCall.agentId];
 		// ================================================================ Check if an eventToken valid?
 
 		// Pace sim with wall clock, sleep if sim is ahead
 		double simTarget = clock.simTargetMs();
 		if (nextEventCall.callTime > simTarget) {
+			if (!this->isRunning) { break; }
 			double sleepMs = (nextEventCall.callTime - simTarget) / clock.speedMultiplier.load();
 			std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(sleepMs));
 		}
@@ -53,6 +56,7 @@ void CoreSim::run(SimClock& clock) {
 		clock.simTimeMs = nextEventCall.callTime;
 		agent->actRandom();
 		this->scheduleNextEventCall(agent, clock.simTimeMs);
+		if (this->onLog) { this->onLog({ LogEntry::Kind::HOLD, clock.simTimeMs, agent->id }); }
 
 		// Handle step mode
 		if (clock.step.load()) {
@@ -61,17 +65,17 @@ void CoreSim::run(SimClock& clock) {
 		}
 
 		// Redundant
-		if (OB.tickCount != lastTick) {
+		if (this->OB.tickCount != lastTick) {
 			this->shouldGetSnapshot = true;
 		}
 
 		// Capture Snapshot, UI update
 		if (this->shouldGetSnapshot) {
-			Snapshot snap = OB.getSnapshot();
-			std::cout << snap.currentPrice << " @ " << OB.tickCount << " -- " << clock.simTimeMs << std::endl;
+			//Snapshot snap = this->OB.getSnapshot();
+			if (this->onTick) { onTick(); }
 
 			this->shouldGetSnapshot = false;
-			lastTick = OB.tickCount;
+			lastTick = this->OB.tickCount;
 		}
 		
 	}
@@ -79,24 +83,26 @@ void CoreSim::run(SimClock& clock) {
 
 // ---- Simulation Initialization Functions ----
 
-void CoreSim::initAgents(unsigned short _agentStartCount, OrderBook& OB, MatchingEngine& ME) {
+void CoreSim::initAgents(unsigned short _agentStartCount) {
 	for (unsigned short i = 0; i < _agentStartCount; ++i) {
-		std::shared_ptr<Agent> agent = std::make_shared<Agent>(OB.makeId(ID_TYPE::AGENT), randomDouble(225.0, 25000.0), randomDouble(100.00, 10'000.00), AgentStatus::ACTIVE, OB, ME);
-		agent->upsertHolding(Holding(agent->getBetaPrice(OB.currentPrice, OrderAction::ASK), randomInt(1, int(OB.shareFloat * 0.025))));
-		agent->upsertHolding(Holding(agent->getBetaPrice(OB.currentPrice, OrderAction::BID), randomInt(1, int(OB.shareFloat * 0.025))));
-		OB.upsertAgent(agent);
+		std::shared_ptr<Agent> agent = std::make_shared<Agent>(this->OB.makeId(ID_TYPE::AGENT), randomDouble(225.0, 25000.0), randomDouble(100.00, 10'000.00), AgentStatus::ACTIVE, this->OB, this->ME);
+		agent->upsertHolding(Holding(agent->getBetaPrice(this->OB.currentPrice, OrderAction::ASK), randomInt(1, int(this->OB.shareFloat * 0.025))));
+		agent->upsertHolding(Holding(agent->getBetaPrice(this->OB.currentPrice, OrderAction::BID), randomInt(1, int(this->OB.shareFloat * 0.025))));
+		this->OB.upsertAgent(agent);
 	}
 }
-void CoreSim::initMarket(unsigned int _tickCount, OrderBook& OB, SimClock& clock) {
-	while (OB.getTick() < _tickCount) {
-		for (const auto& kv : OB.agents) {
+void CoreSim::initMarket(unsigned int _tickCount, SimClock& clock) {
+	while (this->OB.tickCount < _tickCount) {
+		for (const auto& kv : this->OB.agents) {
 			kv.second->actRandom();
-			if (OB.getTick() >= _tickCount) { break; }
+			if (this->OB.tickCount >= _tickCount) { break; }
 		}
+		// Notify TUI of progress during initialization
+		if (this->onTick) { this->onTick(); }
 	} 
 
 	// Schedule initial event calls
-	for (const auto& kv : OB.agents) {
+	for (const auto& kv : this->OB.agents) {
 		scheduleNextEventCall(kv.second, clock.simTimeMs);
 	}
 }
