@@ -10,6 +10,7 @@
 #include "Snapshot.h"
 
 class Agent;
+class SimClock;
 enum class OrderAction;
 enum class OrderType;
 enum class ID_TYPE;
@@ -17,7 +18,7 @@ enum class Session;
 
 struct PriceTime {
 	double price;
-	std::time_t time = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+	double time;
 };
 struct CompareBid {
 public:
@@ -48,6 +49,8 @@ public:
 	double currentPrice;
 	/* Number of shares available to trade */
 	unsigned int shareFloat;
+	/* Simulation Clock */
+	SimClock* clock;
 	/* Total amount of ticks from the start */
 	long long tickCount;
 	/* Log of price movements and their times */

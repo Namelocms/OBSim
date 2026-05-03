@@ -7,6 +7,7 @@
 #include "MatchingEngine.h"
 #include "Agent.h"
 #include "Enums.h"
+#include "../Core/include/SimClock.h"
 
 void populateOrderBook(int numAgents, double startCash, OrderBook& ob, MatchingEngine& me) {
 	for (int i = 0; i < numAgents; ++i) {
@@ -41,6 +42,7 @@ void info(OrderBook& OB) {
 }
 
 int MVP_Benchmark_main() {
+    SimClock clock = SimClock();
     const int NUM_RUNS = 10;        // How many times to repeat the whole test
     int STEPS = 390;         // Steps per simulation
     int NUM_AGENTS = 100;
@@ -65,6 +67,7 @@ int MVP_Benchmark_main() {
     for (int r = 0; r < NUM_RUNS; ++r) {
         // --- Setup (not timed) ---
         OrderBook OB = OrderBook(START_PRICE);
+        OB.clock = &clock;
         MatchingEngine ME = MatchingEngine(OB);
         populateOrderBook(NUM_AGENTS, 100.00, OB, ME);
 

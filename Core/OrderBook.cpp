@@ -2,8 +2,9 @@
 #include "include/Enums.h"
 #include "include/Agent.h"
 #include "include/Util.h"
+#include "include/SimClock.h"
 
-OrderBook::OrderBook(double currentPrice, unsigned int shareFloat) : currentPrice(currentPrice), shareFloat(shareFloat) {
+OrderBook::OrderBook(double currentPrice, unsigned int shareFloat) : clock(clock), currentPrice(currentPrice), shareFloat(shareFloat) {
 	this->setTickPrecision(currentPrice);
 	this->tickCount = 0;
 	this->shareFloat = (shareFloat == 0) ? randomInt(100'000, 100'000'000) : shareFloat;
@@ -74,7 +75,7 @@ void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 		}
 		agent->removeActiveOrder(order);
 		this->tickCount++;
-		this->tickHistory.push_back(PriceTime(this->currentPrice));
+		this->tickHistory.push_back(PriceTime(this->currentPrice, this->clock->simTimeMs));
 	}
 }
 

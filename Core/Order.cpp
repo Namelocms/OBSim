@@ -7,6 +7,7 @@ Order::Order(
 	const std::string agentId,
 	double price,
 	int volume,
+	double timestamp,
 	const OrderAction side,
 	const OrderType type,
 	std::vector<Holding> reservedShares
@@ -16,7 +17,7 @@ Order::Order(
 	price(price),
 	volume(volume),
 	entryVolume(volume),
-	timestamp(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now())),
+	timestamp(timestamp),
 	status(OrderStatus::OPEN),
 	side(side),
 	type(type),

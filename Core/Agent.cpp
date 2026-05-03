@@ -5,6 +5,7 @@
 #include "include/Holding.h"
 #include "include/OrderBook.h"
 #include "include/MatchingEngine.h"
+#include "include/SimClock.h"
 
 Agent::Agent(std::string id, double reactionTime, double cash, AgentStatus status, OrderBook& ob, MatchingEngine& me) :
 	id(id), reactionTime(reactionTime), cash(cash), status(status), OB(ob), ME(me) { }
@@ -159,6 +160,7 @@ std::shared_ptr<Order> Agent::makeMarketBid() {
 		this->id,
 		-1,
 		chosenVol,
+		this->OB.clock->simTimeMs,
 		OrderAction::BID,
 		OrderType::MARKET
 	);
@@ -178,6 +180,7 @@ std::shared_ptr<Order> Agent::makeLimitBid() {
 		this->id,
 		chosenPrice,
 		chosenVol,
+		this->OB.clock->simTimeMs,
 		OrderAction::BID,
 		OrderType::LIMIT
 	);
@@ -199,6 +202,7 @@ std::shared_ptr<Order> Agent::makeMarketAsk() {
 		this->id,
 		-1,
 		chosenVol,
+		this->OB.clock->simTimeMs,
 		OrderAction::ASK,
 		OrderType::MARKET,
 		reservedHoldings
@@ -221,6 +225,7 @@ std::shared_ptr<Order> Agent::makeLimitAsk() {
 		this->id,
 		chosenPrice,
 		chosenVol,
+		this->OB.clock->simTimeMs,
 		OrderAction::ASK,
 		OrderType::LIMIT,
 		reservedHoldings

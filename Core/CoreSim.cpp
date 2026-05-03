@@ -12,9 +12,10 @@ void CoreSim::run(SimClock& clock) {
 	while (!this->eventCallQueue.empty()) this->eventCallQueue.pop();
 	this->isRunning = false;
 	clock.reset();
-
-	this->OB = OrderBook(this->parameters.obStartPrice, this->parameters.obShareFloat);
 	
+	this->OB.resetToInitial(this->parameters.obStartPrice, this->parameters.obShareFloat, true);  // = OrderBook(clock, this->parameters.obStartPrice, this->parameters.obShareFloat);
+	this->OB.clock = &clock;
+
 	//std::cout << "Initializing Agents..." << std::endl;
 	this->initAgents(this->parameters.agentStartCount);
 

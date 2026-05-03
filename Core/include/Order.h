@@ -17,7 +17,7 @@ public:
 	double price;
 	int volume;
 	const int entryVolume;
-	std::time_t timestamp;
+	double timestamp;
 	OrderStatus status;
 	const OrderAction side;
 	const OrderType type;
@@ -29,6 +29,7 @@ public:
 		const std::string agentId,
 		double price,
 		int volume,
+		double timestamp,
 		const OrderAction side,
 		const OrderType type,
 		std::vector<Holding> reservedShares = {}

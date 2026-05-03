@@ -4,6 +4,7 @@
 #include "include/Agent.h"
 #include "include/Enums.h"
 #include "include/Util.h"
+#include "include/SimClock.h"
 
 MatchingEngine::MatchingEngine(OrderBook& ob) : OB(ob) {}
 
@@ -68,7 +69,7 @@ void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
 	// Handle tick counting if bid order was filled
 	if (order->volume == 0) {
 		OB.tickCount++;
-		OB.tickHistory.push_back(PriceTime(OB.currentPrice));
+		OB.tickHistory.push_back(PriceTime(OB.currentPrice, OB.clock->simTimeMs));
 	}
 
 	// Volume Weighted Average Price (VWAP) of shares bought for order
@@ -141,7 +142,7 @@ void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
 
 		// Handle tick counting if bid order was filled
 		OB.tickCount++;
-		OB.tickHistory.push_back(PriceTime(OB.currentPrice));
+		OB.tickHistory.push_back(PriceTime(OB.currentPrice, OB.clock->simTimeMs));
 	}
 }
 
@@ -209,7 +210,7 @@ void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
 
 		// Handle tick counting if bid order was filled
 		OB.tickCount++;
-		OB.tickHistory.push_back(PriceTime(OB.currentPrice));
+		OB.tickHistory.push_back(PriceTime(OB.currentPrice, OB.clock->simTimeMs));
 	}
 
 	// Volume Weighted Average Price (VWAP) of shares bought for order
@@ -275,7 +276,7 @@ void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
 
 		// Handle tick counting if bid order was filled
 		OB.tickCount++;
-		OB.tickHistory.push_back(PriceTime(OB.currentPrice));
+		OB.tickHistory.push_back(PriceTime(OB.currentPrice, OB.clock->simTimeMs));
 	}
 }
 
