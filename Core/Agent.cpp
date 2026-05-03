@@ -261,18 +261,24 @@ void Agent::resetToInitial(double initialCash) {
 	this->activeBids.clear();
 }
 double Agent::getBetaPrice(double currentPrice, OrderAction side, double a, double b, double epsilon) {
-	double x, discount, premium;
+	double x, discount, premium, preRounded, precision, betaPrice;
 	double maxVariance = this->getMaxVariance(currentPrice);
 
 	switch (side) {
 	case OrderAction::BID:
 		x = sampleBeta(a, b);
 		discount = x * maxVariance;
-		return roundTo(std::max(currentPrice * (1 - discount), epsilon), this->OB.tickPrecision);
+		preRounded = std::max(currentPrice * (1 - discount), epsilon);
+		precision = (preRounded < 1.00) ? 0.0001 : 0.01;
+		betaPrice = roundTo(preRounded, precision);
+		return betaPrice;
 	case OrderAction::ASK:
 		x = sampleBeta(a, b);
 		premium = x * maxVariance;
-		return roundTo(currentPrice * (1 + premium), this->OB.tickPrecision);
+		preRounded = currentPrice * (1 + premium);
+		precision = (preRounded < 1.00) ? 0.0001 : 0.01;
+		betaPrice = roundTo(preRounded, precision);
+		return betaPrice;
 	}
 	return roundTo(currentPrice, this->OB.tickPrecision);
 }
