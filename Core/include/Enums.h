@@ -8,6 +8,8 @@ enum class OrderType { MARKET, LIMIT };
 enum class ID_TYPE { ORDER, AGENT };
 enum class Session { PREMARKET, REGULAR, AFTERHOURS, OVERNIGHT, CLOSED };
 enum class AgentStatus { ACTIVE, INACTIVE, BANKRUPT };
+enum class AgentType { RETAIL, INSTITUTION };
+enum class AgentSubType { NOISE, MOMENTUM, ALGO, INFORMED };
 
 class EnumStrings {
 public:
@@ -41,5 +43,15 @@ public:
 		{AgentStatus::ACTIVE, "ACTIVE"},
 		{AgentStatus::INACTIVE, "INACTIVE"},
 		{AgentStatus::BANKRUPT, "BANKRUPT"}
+	};
+	std::unordered_map<AgentType, std::string> agentTypeString = {
+		{AgentType::RETAIL, "RETAIL"},
+		{AgentType::INSTITUTION, "INSTITUTION"}
+	};
+	std::unordered_map<AgentSubType, std::string> agentSubTypeString = {
+		{AgentSubType::NOISE, "NOISE"},
+		{AgentSubType::MOMENTUM, "MOMENTUM"},
+		{AgentSubType::ALGO, "ALGO"},
+		{AgentSubType::INFORMED, "INFORMED"},
 	};
 };

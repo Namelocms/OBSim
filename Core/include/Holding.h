@@ -2,8 +2,8 @@
 class Holding {
 public:
 	double price;
-	int volume;
+	unsigned int volume;
 
 	Holding() = default;
-	Holding(double price, int volume);
+	Holding(double price, unsigned int volume);
 };

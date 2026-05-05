@@ -15,8 +15,8 @@ public:
 	const std::string id;
 	const std::string agentId;
 	double price;
-	int volume;
-	const int entryVolume;
+	unsigned int volume;
+	const unsigned int entryVolume;
 	double timestamp;
 	OrderStatus status;
 	const OrderAction side;
@@ -28,7 +28,7 @@ public:
 		const std::string id,
 		const std::string agentId,
 		double price,
-		int volume,
+		unsigned int volume,
 		double timestamp,
 		const OrderAction side,
 		const OrderType type,

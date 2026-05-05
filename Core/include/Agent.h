@@ -7,6 +7,8 @@
 
 enum class OrderAction;
 enum class AgentStatus;
+enum class AgentType;
+enum class AgentSubType;
 class OrderBook;
 class MatchingEngine;
 class Order;
@@ -24,6 +26,10 @@ public:
 	double cash;
 	/* Agent's status */
 	AgentStatus status;
+	/* Agent main type */
+	AgentType type;
+	/* Agent sub-type */
+	AgentSubType subType;
 	/* All shares the agent currently holds */
 	std::unordered_map<double, Holding> holdings;
 	/* All open ask orders placed by the agent */
@@ -41,6 +47,8 @@ public:
 		double reactionTime,
 		double cash,
 		AgentStatus status,
+		AgentType type,
+		AgentSubType subType,
 		OrderBook& ob,
 		MatchingEngine& me
 	);
@@ -55,7 +63,7 @@ public:
 	/* Remove the given volume of holdings, return the list of holdings objects of the removed shares */
 	std::vector<Holding> removeHoldings(int volume);
 	/* Get the number of shares the Agent is currently holding */
-	int getTotalHoldings();
+	unsigned int getTotalHoldings();
 
 // ---- Active Order Operations ----
 	/* Update/insert an active order */

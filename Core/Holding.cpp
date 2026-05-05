@@ -1,3 +1,3 @@
 #include "include/Holding.h"
 
-Holding::Holding(double price, int volume) : price(price), volume(volume) {}
+Holding::Holding(double price, unsigned int volume) : price(price), volume(volume) {}

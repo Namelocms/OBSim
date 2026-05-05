@@ -6,7 +6,7 @@ Order::Order(
 	const std::string id,
 	const std::string agentId,
 	double price,
-	int volume,
+	unsigned int volume,
 	double timestamp,
 	const OrderAction side,
 	const OrderType type,
@@ -25,8 +25,8 @@ Order::Order(
 
 std::vector<Holding> Order::getReturnableShares() {
 	std::vector<Holding> returnableShares = {};
-	int remainingVol = this->volume;
-	int useVol = 0;
+	unsigned int remainingVol = this->volume;
+	unsigned int useVol = 0;
 
 	for (Holding h : this->reservedShares) {
 		if (remainingVol == 0) { break; }

@@ -7,8 +7,8 @@ int main() {
 	CoreSim sim;
 	sim.setParameters(
 		1,			// Seed
-		100,		// Initialization Ticks
-		1000,		// Agent Start Count
+		1,		// Initialization Ticks
+		100,		// Agent Start Count
 		250'000,	// Share Float
 		1.00		// Start Price
 	);

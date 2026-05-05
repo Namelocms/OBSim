@@ -7,8 +7,8 @@
 #include "include/MatchingEngine.h"
 #include "include/SimClock.h"
 
-Agent::Agent(std::string id, double reactionTime, double cash, AgentStatus status, OrderBook& ob, MatchingEngine& me) :
-	id(id), reactionTime(reactionTime), cash(cash), status(status), OB(ob), ME(me) { }
+Agent::Agent(std::string id, double reactionTime, double cash, AgentStatus status, AgentType type, AgentSubType subType, OrderBook& ob, MatchingEngine& me) :
+	id(id), reactionTime(reactionTime), cash(cash), status(status), type(type), subType(subType), OB(ob), ME(me) { }
 
 // ---- Cash Operations ----
 
@@ -58,9 +58,9 @@ std::vector<Holding> Agent::removeHoldings(int volume) {
 
 	return removedHoldings;
 }
-int Agent::getTotalHoldings() {
+unsigned int Agent::getTotalHoldings() {
 	return std::accumulate(this->holdings.begin(), this->holdings.end(), 0,
-		[](double sum, const auto& kv) {
+		[](unsigned int sum, const auto& kv) {
 			return sum + kv.second.volume;
 		});
 }
@@ -104,10 +104,13 @@ void Agent::actRandom() {
 	case OrderAction::BID:
 		switch (orderType) {
 		case OrderType::MARKET:
+			if (this->OB.session != Session::REGULAR) { break; } // No market orders outside regular market hours
+			if (this->type == AgentType::INSTITUTION) { break; } // Testing no market orders for institutions or algos, definitly make the orderbook deeper
 			order = this->makeMarketBid();
 			this->ME.matchMarketBid(order);
 			break;
 		case OrderType::LIMIT:
+			if (this->subType == AgentSubType::ALGO && this->activeBids.size() > 0) { break; }
 			order = this->makeLimitBid();
 			this->ME.matchLimitBid(order);
 			break;
@@ -116,10 +119,13 @@ void Agent::actRandom() {
 	case OrderAction::ASK:
 		switch (orderType) {
 		case OrderType::MARKET:
+			if (this->OB.session != Session::REGULAR) { break; }
+			if (this->type == AgentType::INSTITUTION) { break; } // Testing no market orders for institutions or algos
 			order = this->makeMarketAsk();
 			this->ME.matchMarketAsk(order);
 			break;
 		case OrderType::LIMIT:
+			if (this->subType == AgentSubType::ALGO && this->activeAsks.size() > 0) { break; }
 			order = this->makeLimitAsk();
 			this->ME.matchLimitAsk(order);
 			break;

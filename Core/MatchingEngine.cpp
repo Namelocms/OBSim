@@ -14,9 +14,9 @@ void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
 	std::shared_ptr<Agent> biddingAgent = this->OB.agents[order->agentId];
 	std::shared_ptr<Agent> askingAgent;
 	std::shared_ptr<Order> bestAsk;
-	int tradeVol = 0;
-	int affordableVol = 0;
-	int totalVolume = 0;
+	unsigned int tradeVol = 0;
+	unsigned int affordableVol = 0;
+	unsigned int totalVolume = 0;
 	double tradeCost = 0.00;
 	double totalCost = 0.00;
 
@@ -82,8 +82,8 @@ void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
 	std::shared_ptr<Agent> biddingAgent = this->OB.agents[order->agentId];
 	std::shared_ptr<Agent> askingAgent;
 	std::shared_ptr<Order> bestAsk;
-	int tradeVol = 0;
-	int totalVolume = 0;
+	unsigned int tradeVol = 0;
+	unsigned int totalVolume = 0;
 	double tradeCost = 0.00;
 	double refund = 0.00;
 
@@ -152,8 +152,8 @@ void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
 	std::shared_ptr<Agent> askingAgent = this->OB.agents[order->agentId];
 	std::shared_ptr<Agent> biddingAgent;
 	std::shared_ptr<Order> bestBid;
-	int tradeVol = 0;
-	int totalVolume = 0;
+	unsigned int tradeVol = 0;
+	unsigned int totalVolume = 0;
 	double tradeCost = 0.00;
 	double totalCost = 0.00;
 
@@ -223,8 +223,8 @@ void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
 	std::shared_ptr<Agent> askingAgent = this->OB.agents[order->agentId];
 	std::shared_ptr<Agent> biddingAgent;
 	std::shared_ptr<Order> bestBid;
-	int tradeVol = 0;
-	int totalVolume = 0;
+	unsigned int tradeVol = 0;
+	unsigned int totalVolume = 0;
 	double tradeCost = 0.00;
 
 	auto it = this->OB.bidQueue.begin();
@@ -282,6 +282,6 @@ void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
 
 // ---- Utility Operations ----
 
-int MatchingEngine::getAffordableVolume(double targetPrice, double actingAgentCash) {
-	return int(actingAgentCash / targetPrice);
+unsigned int MatchingEngine::getAffordableVolume(double targetPrice, double actingAgentCash) {
+	return unsigned int(actingAgentCash / targetPrice);
 }

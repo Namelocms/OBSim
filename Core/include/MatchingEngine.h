@@ -26,6 +26,6 @@ public:
 
 private:
 	/* Get the max amount of shares an agent can afford at the given targetPrice */
-	int getAffordableVolume(double targetPrice, double actingAgentCash);
+	unsigned int getAffordableVolume(double targetPrice, double actingAgentCash);
 };
 

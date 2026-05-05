@@ -49,6 +49,10 @@ inline int randomInt(int min, int max) {
     std::uniform_int_distribution<int> dist(min, max);
     return dist(generator);
 }
+inline unsigned int randomUInt(unsigned int min, unsigned int max) {
+    std::uniform_int_distribution<unsigned int> dist(min, max);
+    return dist(generator);
+}
 inline double randomDouble(double min, double max) {
     std::uniform_real_distribution<double> unif(min, max);
     return unif(generator);
