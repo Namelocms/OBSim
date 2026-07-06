@@ -33,7 +33,5 @@ The engine utilizes a non-destructive iterator pattern to match crossing orders:
 ## Usage Example
 Look at `App/main.cpp` for the most up-to-date usage.
 
-For MVP (Current release) usage, look at `App/MVP_Benchmark_main.cpp`
-
 ## Benchmarks
 For detailed performance benchmarks, look at the `Benchmarks.md` file
