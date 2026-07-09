@@ -6,6 +6,7 @@ _Full depth agent-based market modeling_
 ![CMake](https://img.shields.io/badge/CMake-%3E%3D3.31-blue.svg)
 ![Status](https://img.shields.io/badge/status-active--development-yellow.svg)
 
+<img width="1904" height="1020" alt="OBSim070726_demo" src="https://github.com/user-attachments/assets/a9a05414-c5c6-45bc-a211-245d72065caa" />
 
 ---
 
@@ -136,7 +137,7 @@ Based on this correlation, the engine is highly predictable. If we were to scale
 </details>
 
 ## Architecture
-
+<img width="2220" height="1380" alt="OBSim Architecture" src="https://github.com/user-attachments/assets/e37f3d96-9e12-4a33-a463-2448f08510fc" />
 
 ### Core Components
 - OrderBook: Stores all simulation data, including agents, orders, etc. See [OrderBook.h](Core/include/OrderBook.h)
