@@ -146,6 +146,8 @@ Based on this correlation, the engine is highly predictable. If we were to scale
 - Orders: A unique instance holding all information related to each order placed by agents, including number of shares, cost, etc. See [Order.h](Core/include/Order.h)
 
 ## Getting Started
+#### TUI
+If you just want to try the project without the code, download the [latest release](https://github.com/Namelocms/OBSim/releases)
 #### Prerequisites
 - CMake ≥3.31
 - C++20 Compiler
