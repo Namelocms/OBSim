@@ -8,7 +8,7 @@ _Full depth agent-based market modeling_
 
 <img width="1904" height="1020" alt="OBSim070726_demo" src="https://github.com/user-attachments/assets/a9a05414-c5c6-45bc-a211-245d72065caa" />
 
-> OBSim is intended for research purposes, strategies that work in this simulation are not guaranteed to work in real-life trading situations. It is not intended as financial, trading, or investment advice.
+> OBSim is intended for research purposes. Strategies that work in this simulation are not guaranteed to work in real-life trading situations. It is not intended as financial, trading, or investment advice.
 
 ---
 
