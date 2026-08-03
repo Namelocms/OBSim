@@ -2,8 +2,7 @@
 #include <unordered_map>
 #include <string>
 #include <memory>
-#include <cmath>
-#include <numeric>
+#include <vector>
 
 enum class OrderAction;
 enum class AgentStatus;
@@ -21,9 +20,19 @@ public:
 	/* Agent's unique ID */
 	const std::string id;
 	/* Agent's minimum reaction time in milliseconds */
+	double reactionTimeFloor;
+	/* Agent's currently used reaction time with jitter added */
 	double reactionTime;
 	/* Agent's buying power */
 	double cash;
+	/* Agent's market sentiment */
+	double sentiment;
+	/* Agent's speed of sentiment mean reversion to OB.marketNeutralSentiment, higher = faster */
+	double sentimentTheta;
+	/* Agent's sentiment volatility, higher = larger swings */
+	double sentimentSigma;
+	/* Controls agent's randomness and sharpness of the sentiment probability distribution */
+	double sentimentTemperature;
 	/* Agent's status */
 	AgentStatus status;
 	/* Agent main type */
@@ -44,7 +53,7 @@ public:
 	Agent() = default;
 	Agent(
 		std::string id,
-		double reactionTime,
+		double reactionTimeFloor,
 		double cash,
 		AgentStatus status,
 		AgentType type,
@@ -74,8 +83,14 @@ public:
 // ---- Action Operations ----
 	/* Execute a chosen action */
 	void actRandom();
-	/* Choose a random OrderAction given the agent's current holdings and cash */
+	/* Update the agent's sentiment value using the Ornstein-Uhlenbeck (OU) Process */
+	void updateSentiment();
+	/* Convert the raw sentiment value into a usable OrderAction enum using the SoftMax function */
+	OrderAction sentimentToAction();
+	/* Choose a random OrderAction given the agent's current portfolio and sentiment */
 	OrderAction getRandomAction();
+	/* !!DEPRECATED!! Choose a random OrderAction given the agent's current holdings and cash */
+	OrderAction getRandomAction_DEPRECATED();
 	/* Make a random market bid order */
 	std::shared_ptr<Order> makeMarketBid();
 	/* Make a random limit bid order */
@@ -103,6 +118,9 @@ public:
 	double getBetaPrice(double currentPrice, OrderAction side, double a = 2.0, double b = 5.0, double epsilon = 0.0001);
 
 private:
+	/* Anchor points for each agent's sentiment to action softmax calculations, [SELL, HOLD, BUY] */
+	const std::vector<double> sentimentAnchors = { -1.0, 0.0, 1.0 };
+	std::vector<OrderAction> sentimentActions;
 	/* Get the max variance in price (how much the computed price will differ from passed price)
 	*
 	* scale = Scale factor, controls the overall height of the curve

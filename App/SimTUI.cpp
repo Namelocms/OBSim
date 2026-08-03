@@ -203,6 +203,14 @@ void SimTUI::run() {
         }
 
         // Main keyboard handling
+        if (event == Event::Character(',') || event == Event::Character('<')) {
+            sim_.OB.marketNeutralSentiment -= 0.01;
+            return true;
+        }
+        if (event == Event::Character('.') || event == Event::Character('>')) {
+            sim_.OB.marketNeutralSentiment += 0.01;
+            return true;
+        }
         if (event == Event::Character('q') || event == Event::Character('Q')) {
             sim_.isRunning = false;
             screen.ExitLoopClosure()();
@@ -316,6 +324,7 @@ void SimTUI::refreshState_() {
     state_.totalOrders = sim_.OB.bidQueue.size() + sim_.OB.askQueue.size();
     state_.totalAgents = sim_.OB.agents.size();
     state_.shareFloat = sim_.OB.shareFloat;
+    state_.marketBaseSentiment = sim_.OB.marketNeutralSentiment;
 
     // Order book depth
     auto snap = sim_.OB.getSnapshot(OB_DEPTH);
@@ -339,6 +348,7 @@ void SimTUI::refreshState_() {
         row.holdings = agent->getTotalHoldings();
         row.numBids = agent->activeBids.size();
         row.numAsks = agent->activeAsks.size();
+        row.sentiment = agent->sentiment;
         // status string
         switch (agent->status) {
         case AgentStatus::ACTIVE:   row.status = "ACT"; break;
@@ -412,6 +422,8 @@ Element SimTUI::buildHeader_() {
         text(std::to_string(state_.shareFloat)) | color(Color::White),
         text("  SimTime: ") | color(Color::GrayDark),
         text(fmtMs(state_.simTimeMs)) | color(Color::White),
+        text("  Market Sentiment: ") | color(Color::GrayDark),
+        text(std::to_string(state_.marketBaseSentiment)) | color(Color::White),
         filler(),
         text(statusStr) | bold | color(statusCol),
         text("  Speed: ") | color(Color::GrayDark),
@@ -593,6 +605,7 @@ Element SimTUI::buildAgentTable_() {
         col("HELD",     6, Color::GrayDark),
         col("BIDS",     6, Color::GrayDark),
         col("ASKS",     6, Color::GrayDark),
+        col("SENTIMENT",     10, Color::GrayDark),
         col("ST",       4, Color::GrayDark),
         }) | bold);
     rows.push_back(separator());
@@ -610,6 +623,7 @@ Element SimTUI::buildAgentTable_() {
             col(std::to_string(a.holdings),   6, Color::Yellow),
             col(std::to_string(a.numBids),    6, Color::Green),
             col(std::to_string(a.numAsks),    6, Color::Red),
+            col(std::to_string(a.sentiment),    10, Color::GrayDark),
             col(a.status,                     4, stCol),
             }));
     }
@@ -663,6 +677,7 @@ Element SimTUI::buildControls_() {
         key("A/D"),   lbl("Agents page"),
         key("R"),     lbl("Reset"),
         key("Q"),     lbl("Quit"),
+        key(",/."),     lbl("Sentiment"),
         });
 }
 

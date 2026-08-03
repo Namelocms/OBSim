@@ -7,8 +7,17 @@
 #include "include/MatchingEngine.h"
 #include "include/SimClock.h"
 
-Agent::Agent(std::string id, double reactionTime, double cash, AgentStatus status, AgentType type, AgentSubType subType, OrderBook& ob, MatchingEngine& me) :
-	id(id), reactionTime(reactionTime), cash(cash), status(status), type(type), subType(subType), OB(ob), ME(me) { }
+Agent::Agent(std::string id, double reactionTimeFloor, double cash, AgentStatus status, AgentType type, AgentSubType subType, OrderBook& ob, MatchingEngine& me) :
+	id(id), 
+	reactionTimeFloor(reactionTimeFloor), 
+	reactionTime(reactionTimeFloor), cash(cash), 
+	status(status), type(type), subType(subType), 
+	OB(ob), ME(me), 
+	sentiment(randomDouble(-0.9, 0.9)), sentimentTheta(randomDouble(0.01, 1.0)),
+	sentimentSigma(randomDouble(0.0, 0.99)), sentimentTemperature(0.5) {
+
+	this->sentimentActions = { OrderAction::ASK, OrderAction::HOLD, OrderAction::BID };
+}
 
 // ---- Cash Operations ----
 
@@ -139,7 +148,75 @@ void Agent::actRandom() {
 		break;
 	}
 }
+void Agent::updateSentiment() {
+	double s0 = this->sentiment;
+	double mu = this->OB.marketNeutralSentiment;
+	double theta = this->sentimentTheta;
+	double r = this->reactionTime;
+	double sigma = this->sentimentSigma;
+	double decay = std::exp(-theta * r);
+	double noiseScaling = std::sqrt((1 - std::exp((-2 * theta) * r)) / (2 * theta));
+	double n = sampleNormal();
+
+	double newSentiment = mu + (s0 - mu) * decay + sigma * noiseScaling * n;
+	this->sentiment = newSentiment;
+}
+OrderAction Agent::sentimentToAction() {
+	double boundSentiment = std::max(-1.0, std::min(1.0, this->sentiment));
+
+	std::vector<double> scores(sentimentActions.size());
+	for (int i = 0; i < scores.size(); ++i) {
+		double diff = boundSentiment - this->sentimentAnchors[i];
+		scores[i] = -(diff * diff) / this->sentimentTemperature;
+	}
+
+	double maxScore = *std::max_element(scores.begin(), scores.end());
+
+	std::vector<double> expScores(sentimentActions.size());
+	double totalScore = 0.0;
+	for (int i = 0; i < expScores.size(); ++i) {
+		expScores[i] = std::exp(scores[i] - maxScore);
+		totalScore += expScores[i];
+	}
+
+	std::vector<double> probs(this->sentimentActions.size());
+	for (int i = 0; i < probs.size(); ++i) {
+		probs[i] = expScores[i] / totalScore;
+	}
+
+	// Random weighted choice
+	int choice = sampleDiscrete(probs);
+
+	return this->sentimentActions[choice];
+}
 OrderAction Agent::getRandomAction() {
+	bool hasCash = this->cash >= this->OB.currentPrice;
+	bool hasHolding = this->getTotalHoldings() > 0;
+	bool hasActiveOrder = !this->activeAsks.empty() || !this->activeBids.empty();
+	OrderAction action = OrderAction::HOLD;
+
+	// Check if agent is bankrupt
+	if (!hasCash && !hasHolding && !hasActiveOrder) {
+		if (this->status != AgentStatus::BANKRUPT) { this->status = AgentStatus::BANKRUPT; }
+		return action;
+	}
+
+	this->updateSentiment();
+
+	action = this->sentimentToAction();
+
+	// Sanitize action choice
+	if (action == OrderAction::BID && !hasCash) { action = OrderAction::HOLD; }
+	if (action == OrderAction::ASK && !hasHolding) { action = OrderAction::HOLD; }
+
+	// Check if agent should cancel an active order
+	if (action == OrderAction::HOLD && hasActiveOrder && randomInt(0, 3) == 0) {
+		action = OrderAction::CANCEL;
+	}
+
+	return action;
+}
+OrderAction Agent::getRandomAction_DEPRECATED() {
 	std::vector<OrderAction> availableActions = { OrderAction::HOLD };
 	int totalHoldings = this->getTotalHoldings();
 	int actionChoice = 0;

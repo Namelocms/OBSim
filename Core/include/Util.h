@@ -26,6 +26,11 @@ template <typename T>
 inline void shuffleVector(std::vector<T>& vec) {
     std::shuffle(vec.begin(), vec.end(), generator);
 }
+/* Get a weighted random index from a discrete distribution */
+inline int sampleDiscrete(const std::vector<double>& weights) {
+    std::discrete_distribution<int> dist(weights.begin(), weights.end());
+    return dist(generator);
+}
 /* Get a value from beta distribution */
 inline double sampleBeta(double alpha, double beta) {
     std::gamma_distribution<double> ga(alpha, 1.0);
@@ -33,6 +38,11 @@ inline double sampleBeta(double alpha, double beta) {
     double x = ga(generator);
     double y = gb(generator);
     return x / (x + y);
+}
+/* Get a value from normal distribution */
+inline double sampleNormal() {
+    std::normal_distribution<double> dist(0.0, 1.0);
+    return dist(generator);
 }
 /*
 round to the desired precision

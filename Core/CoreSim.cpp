@@ -109,7 +109,7 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 	double informedType_I = randomDouble(algoType_I, 1.00);
 
 	// Agent parameters
-	double a_reactionTime;
+	double a_reactionTimeFloor;
 	double a_accountCash;
 	AgentStatus a_status = AgentStatus::ACTIVE;
 	AgentType a_type;
@@ -135,13 +135,13 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 
 			// Agent Reaction Times
 			//																	 0.2s        1hr
-			if (a_subType == AgentSubType::NOISE) { a_reactionTime = randomDouble(200.0, 3'600'000.0); }
+			if (a_subType == AgentSubType::NOISE) { a_reactionTimeFloor = randomDouble(200.0, 3'600'000.0); }
 			//																			  0.5s     15min
-			else if (a_subType == AgentSubType::MOMENTUM) { a_reactionTime = randomDouble(5000.0, 900'000.0); }
+			else if (a_subType == AgentSubType::MOMENTUM) { a_reactionTimeFloor = randomDouble(5000.0, 900'000.0); }
 			//																		  0.01s    2s
-			else if (a_subType == AgentSubType::ALGO) { a_reactionTime = randomDouble(10.0, 2000.0); }
+			else if (a_subType == AgentSubType::ALGO) { a_reactionTimeFloor = randomDouble(10.0, 2000.0); }
 			//									 0.2s        1hr
-			else { a_reactionTime = randomDouble(200.0, 3'600'000.0); }
+			else { a_reactionTimeFloor = randomDouble(200.0, 3'600'000.0); }
 
 			// Agent Account Balances
 			a_accountCash = roll <= 0.75 ? randomDouble(100.0, 1000.0) : randomDouble(1000.0, 40'000.0); // Lower account balances 75% more likely
@@ -158,7 +158,7 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 		else {
 			a_subType = roll <= algoType_I ? AgentSubType::ALGO : AgentSubType::INFORMED;
 			//															    0.001s, 0.1s			    0.2s    1hr
-			a_reactionTime = a_subType == AgentSubType::ALGO ? randomDouble(0.1, 1.0) : randomDouble(200.0, 3'600'000.0);
+			a_reactionTimeFloor = a_subType == AgentSubType::ALGO ? randomDouble(0.1, 1.0) : randomDouble(200.0, 3'600'000.0);
 			a_accountCash = randomDouble(50'000.0, 500'000.0); // TODO: Should be related to OB start price?
 
 			if (dispersedShares_I >= 10) {
@@ -177,7 +177,7 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 		// Create Agent
 		std::shared_ptr<Agent> agent = std::make_shared<Agent>(
 			this->OB.makeId(ID_TYPE::AGENT),
-			a_reactionTime,
+			a_reactionTimeFloor,
 			a_accountCash,
 			a_status,
 			a_type,
@@ -255,8 +255,9 @@ void CoreSim::initMarket(unsigned int _tickCount, SimClock& clock) {
 // ---- Event Functions ----
 
 void CoreSim::scheduleNextEventCall(std::shared_ptr<Agent> agent, double simTime) {
-	double jitter = randomDouble(0.0, agent->reactionTime);
-	double nextEventCallTime = simTime + agent->reactionTime + jitter;
+	double jitter = randomDouble(0.0, agent->reactionTimeFloor);
+	agent->reactionTime = agent->reactionTimeFloor + jitter;  // used for sentiment calculation
+	double nextEventCallTime = simTime + agent->reactionTime;
 	
 	EventCall ec = EventCall(nextEventCallTime, agent->id);
 	this->eventCallQueue.push(ec);

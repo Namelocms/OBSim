@@ -7,6 +7,7 @@
 OrderBook::OrderBook(double currentPrice, unsigned int shareFloat) : clock(clock), currentPrice(currentPrice), shareFloat(shareFloat) {
 	this->setTickPrecision(currentPrice);
 	this->tickCount = 0;
+	this->marketNeutralSentiment = 0.00;
 	this->shareFloat = (shareFloat == 0) ? randomInt(100'000, 100'000'000) : shareFloat;
 	this->TICKER_SYMBOL = this->makeTickerSymbol();
 	this->session = Session::PREMARKET;

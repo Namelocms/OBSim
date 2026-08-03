@@ -58,6 +58,7 @@ struct TUIState {
         int         holdings = 0;
         int         numBids = 0;
         int         numAsks = 0;
+        double      sentiment = 0.0;
         std::string status;
     };
     std::vector<AgentRow>   agents;
@@ -66,6 +67,7 @@ struct TUIState {
     double   currentPrice = 0.0;
     double   spread = 0.0;
     double   simTimeMs = 0.0;
+    double   marketBaseSentiment = 0.0;
     int      totalTicks = 0;
     int      totalOrders = 0;
     int      totalAgents = 0;

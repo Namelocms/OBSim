@@ -9,15 +9,12 @@ int main() {
 		1,			// Seed
 		1,		// Initialization Ticks
 		100,		// Agent Start Count
-		250'000,	// Share Float
+		2'500'000,	// Share Float
 		1.00		// Start Price
 	);
-
+	
 	SimTUI tui(sim, clock);
 	tui.run();
-
-
-	// Reset freezes on dialog screen after pressing enter
 
 	return 0;
 }

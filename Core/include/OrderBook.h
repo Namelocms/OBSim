@@ -53,6 +53,8 @@ public:
 	SimClock* clock;
 	/* Total amount of ticks from the start */
 	long long tickCount;
+	/* The overall neutral sentiment value for all agents in the market */
+	double marketNeutralSentiment;
 	/* Log of price movements and their times */
 	std::vector<PriceTime> tickHistory;
 	/* Priority set for bid limit orders */
