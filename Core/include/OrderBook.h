@@ -27,9 +27,9 @@ public:
 			return o1->price > o2->price; // higher price first
 		}
 		if (o1->timestamp != o2->timestamp) {
-			return o1->timestamp > o2->timestamp; // earlier timestamp first
+			return o1->timestamp < o2->timestamp; // earlier timestamp first (FIFO)
 		}
-		return o1->id < o2->id; // unique tiebreak, two distinct orders must never compare equal
+		return o1->id < o2->id; // unique tiebreak, ids are zero padded so this is creation order
 	}
 };
 struct CompareAsk {
@@ -39,9 +39,9 @@ public:
 			return o1->price < o2->price; // lower price first
 		}
 		if (o1->timestamp != o2->timestamp) {
-			return o1->timestamp > o2->timestamp; // earlier timestamp first
+			return o1->timestamp < o2->timestamp; // earlier timestamp first (FIFO)
 		}
-		return o1->id < o2->id; // unique tiebreak, two distinct orders must never compare equal
+		return o1->id < o2->id; // unique tiebreak, ids are zero padded so this is creation order
 	}
 };
 
