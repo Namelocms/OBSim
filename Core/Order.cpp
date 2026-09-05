@@ -10,8 +10,7 @@ Order::Order(
 	double timestamp,
 	const OrderAction side,
 	const OrderType type,
-	std::vector<Holding> reservedShares,
-	double reservedCash
+	std::vector<Holding> reservedShares
 ) :
 	id(id),
 	agentId(agentId),
@@ -22,8 +21,7 @@ Order::Order(
 	status(OrderStatus::OPEN),
 	side(side),
 	type(type),
-	reservedShares(reservedShares),
-	reservedCash(reservedCash) {}
+	reservedShares(reservedShares) {}
 
 std::vector<Holding> Order::getReturnableShares() {
 	std::vector<Holding> returnableShares = {};
