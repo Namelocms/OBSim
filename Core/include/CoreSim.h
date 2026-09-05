@@ -7,6 +7,7 @@
 #include <iostream>
 #include <thread>
 #include <functional>
+#include <atomic>
 
 #include "OrderBook.h"
 #include "MatchingEngine.h"
@@ -62,6 +63,18 @@ struct Config {
 */
 inline constexpr double OVERNIGHT_SIM_PROBABILITY = 0.09;
 
+/* ---- Back-data safety caps ----
+*
+* Defense in depth. Termination is already guaranteed by simulated time, these
+* exist so a future change to agent behavior can never reintroduce a hang.
+*/
+inline constexpr long long BACK_DATA_MAX_EVENTS = 500'000'000LL;
+inline constexpr double BACK_DATA_MAX_WALL_SECONDS = 900.0;
+/* Whole extra days the run may add chasing minLiquidity, keeps the handoff on the same session open */
+inline constexpr int BACK_DATA_MAX_EXTRA_DAYS = 3;
+/* How often the back-data loop checks caps, cancellation, and reports progress */
+inline constexpr long long BACK_DATA_CHECK_INTERVAL = 4096;
+
 struct EventCall {
     double callTime;
     std::string agentId;
@@ -86,6 +99,10 @@ public:
     std::priority_queue<EventCall, std::vector<EventCall>, CompareEventCalls> eventCallQueue;
     /* Sim time of the next session change, drives boundary processing in both loops */
     double nextBoundaryMs = 0.0;
+    /* Set to abort an in-progress back-data run, the TUI raises this from its own thread */
+    std::atomic<bool> cancelRequested{ false };
+    /* True when the last back-data run was cut short by a safety cap or a cancel */
+    bool backDataAborted = false;
 
     // ---- Main Simulation Loop ----
 
@@ -94,7 +111,13 @@ public:
     // ---- Simulation Initialization Functions ----
 
     void initAgents(unsigned short _agentStartCount);
-    void initMarket(unsigned int _tickCount, SimClock& clock);
+    /* Run the headless back-data simulation, unthrottled, from t = 0 to the live start
+    *
+    * Bounded by simulated time rather than fill count, so it always terminates even
+    * if no trade ever occurs. On return the clock sits exactly on the open of
+    * parameters.liveStartSession and every agent has one pending event from there.
+    */
+    void runBackData(SimClock& clock);
 
     // ---- Session Functions ----
 
@@ -127,5 +150,13 @@ public:
     );
 
 private:
+    /* Drive the event queue forward to targetMs with no wall clock pacing
+    *
+    * Returns false when a safety cap tripped or a cancel was requested, true on
+    * reaching the target normally.
+    */
+    bool pumpBackDataEvents(double targetMs, SimClock& clock, long long& eventsProcessed,
+        const std::chrono::steady_clock::time_point& wallStart);
+
     Config parameters;
 };

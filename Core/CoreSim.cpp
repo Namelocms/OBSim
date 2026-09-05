@@ -11,6 +11,7 @@ void CoreSim::run(SimClock& clock) {
 	// Clear stale state from any previous run
 	while (!this->eventCallQueue.empty()) this->eventCallQueue.pop();
 	this->isRunning = false;
+	this->cancelRequested.store(false);
 	clock.reset();
 	
 	this->OB.resetToInitial(this->parameters.obStartPrice, this->parameters.obShareFloat, true);  // = OrderBook(clock, this->parameters.obStartPrice, this->parameters.obShareFloat);
@@ -19,23 +20,18 @@ void CoreSim::run(SimClock& clock) {
 	//std::cout << "Initializing Agents..." << std::endl;
 	this->initAgents(this->parameters.agentStartCount);
 
-	//std::cout << "Initializing Market..." << std::endl;
-	// TEMPORARY: the tick-count warmup is replaced by the time-bounded back-data run
-	// driven by parameters.backDataDurationMs(). Until then this preserves the
-	// previous behavior so the sim keeps running between steps.
-	constexpr unsigned int LEGACY_INIT_TICKS = 1;
-	this->initMarket(LEGACY_INIT_TICKS, clock);
+	//std::cout << "Running Back Data..." << std::endl;
+	// Headless, unthrottled, bounded by simulated time. Leaves the clock sitting on
+	// the open of the configured live start session with history already built.
+	this->runBackData(clock);
 
-	// TEMPORARY: the tick-based warmup runs entirely at t = 0, which the calendar
-	// reads as premarket. Start the live sim at the regular open so session driven
-	// behavior matches the previous default. Step 5 replaces this with a real
-	// handoff at the configured liveStartSession.
-	this->skipToTime(MarketCalendar::sessionOpenMs(Session::REGULAR, 0), clock);
-	this->OB.session = MarketCalendar::sessionAt(clock.simTimeMs);
-	this->nextBoundaryMs = MarketCalendar::nextBoundaryMs(clock.simTimeMs);
+	if (this->backDataAborted) {
+		this->isRunning = false;
+		return;
+	}
 
 	clock.start();
-	clock.resume(); // recalibrate the wall clock against a non-zero sim start time
+	clock.resume(); // recalibrate the wall clock against the non-zero handoff time
 	this->isRunning = true;
 	this->shouldGetSnapshot = false;
 	long long lastTick = 0;
@@ -253,22 +249,117 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 		// add holding(s)
 	}
 }
-void CoreSim::initMarket(unsigned int _tickCount, SimClock& clock) {
-	while (this->OB.tickCount < _tickCount) {
-		for (const auto& kv : this->OB.agents) {
-			kv.second->actRandom();
-			if (this->OB.tickCount >= _tickCount) { break; }
+bool CoreSim::pumpBackDataEvents(double targetMs, SimClock& clock, long long& eventsProcessed,
+	const std::chrono::steady_clock::time_point& wallStart) {
+
+	while (clock.simTimeMs < targetMs) {
+		if (this->eventCallQueue.empty()) {
+			// Should not happen, every agent is rescheduled after acting. Reseed
+			// rather than spin, and give up if there is nobody left to act.
+			if (this->OB.agents.empty()) { return true; }
+			for (const auto& kv : this->OB.agents) { this->scheduleNextEventCall(kv.second, clock.simTimeMs); }
 		}
-		// Notify TUI of progress during initialization
-		if (this->onTick) { this->onTick(); }
+
+		// Read the call time before touching the queue, a skip rebuilds it underneath us
+		double nextCallTime = this->eventCallQueue.top().callTime;
+
+		// Stop cleanly at the target rather than overshooting it
+		if (nextCallTime >= targetMs) { return true; }
+
+		// Cross any session boundaries this event would jump over
+		if (nextCallTime >= this->nextBoundaryMs) {
+			if (this->processSessionBoundaries(nextCallTime, clock)) { continue; }
+		}
+
+		const EventCall& nextEventCall = this->eventCallQueue.top();
+		std::shared_ptr<Agent> agent = this->OB.agents[nextEventCall.agentId];
+
+		this->eventCallQueue.pop();
+		clock.simTimeMs = nextCallTime;
+		agent->actRandom();
+		this->scheduleNextEventCall(agent, clock.simTimeMs);
+		++eventsProcessed;
+
+		// Caps, cancellation and progress are checked on an interval, not per event
+		if ((eventsProcessed % BACK_DATA_CHECK_INTERVAL) == 0) {
+			if (this->cancelRequested.load()) { return false; }
+			if (eventsProcessed >= BACK_DATA_MAX_EVENTS) { return false; }
+
+			double wallSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - wallStart).count();
+			if (wallSeconds >= BACK_DATA_MAX_WALL_SECONDS) { return false; }
+
+			if (this->onTick) { this->onTick(); }
+		}
 	}
 
-	// Change to Regular market hours
-	this->OB.session = Session::REGULAR;
+	return true;
+}
+void CoreSim::runBackData(SimClock& clock) {
+	double liveStartMs = this->parameters.backDataDurationMs();
 
-	// Schedule initial event calls
-	for (const auto& kv : this->OB.agents) {
-		scheduleNextEventCall(kv.second, clock.simTimeMs);
+	// Back data always begins at the day 0 premarket open
+	clock.simTimeMs = 0.0;
+	this->OB.session = MarketCalendar::sessionAt(0.0);
+	this->nextBoundaryMs = MarketCalendar::nextBoundaryMs(0.0);
+	this->backDataAborted = false;
+
+	for (const auto& kv : this->OB.agents) { this->scheduleNextEventCall(kv.second, 0.0); }
+
+	long long eventsProcessed = 0;
+	auto wallStart = std::chrono::steady_clock::now();
+
+	// ---- Main back-data span ----
+	bool completed = true;
+	if (liveStartMs > 0.0) {
+		completed = this->pumpBackDataEvents(liveStartMs, clock, eventsProcessed, wallStart);
+	}
+
+	// ---- Optional extension to reach the minimum liquidity ----
+	// Extends a whole day at a time so the handoff still lands on the same session open
+	double handoffMs = liveStartMs;
+	if (completed && this->parameters.minLiquidity > 0) {
+		int extraDays = 0;
+		while (extraDays < BACK_DATA_MAX_EXTRA_DAYS
+			&& (this->OB.getNumBids() < int(this->parameters.minLiquidity)
+				|| this->OB.getNumAsks() < int(this->parameters.minLiquidity))) {
+
+			handoffMs += MarketCalendar::minutesToMs(MarketCalendar::TOTAL_MINUTES_PER_DAY);
+			++extraDays;
+			completed = this->pumpBackDataEvents(handoffMs, clock, eventsProcessed, wallStart);
+			if (!completed) { break; }
+		}
+
+		bool stillThin = this->OB.getNumBids() < int(this->parameters.minLiquidity)
+			|| this->OB.getNumAsks() < int(this->parameters.minLiquidity);
+		if (stillThin && this->onLog) {
+			this->onLog({ LogEntry::Kind::HOLD, clock.simTimeMs,
+				"WARNING: minimum liquidity not met after " + std::to_string(extraDays) + " extra days" });
+		}
+	}
+
+	if (!completed) {
+		this->backDataAborted = true;
+		if (this->onLog) {
+			this->onLog({ LogEntry::Kind::HOLD, clock.simTimeMs, "BACK DATA ABORTED, cap reached or cancelled" });
+		}
+		return;
+	}
+
+	// ---- Handoff ----
+	// Finish crossing any boundaries left between the final event and the handoff.
+	// Loops because an overnight skip returns early having rebuilt the queue.
+	while (this->processSessionBoundaries(handoffMs, clock)) {}
+
+	// Land exactly on the live start and give every agent a fresh event from there,
+	// so nothing fires in the past once the live loop takes over
+	this->skipToTime(handoffMs, clock);
+	this->OB.session = MarketCalendar::sessionAt(handoffMs);
+	this->nextBoundaryMs = MarketCalendar::nextBoundaryMs(handoffMs);
+
+	if (this->onLog) {
+		EnumStrings es;
+		this->onLog({ LogEntry::Kind::HOLD, clock.simTimeMs,
+			"BACK DATA COMPLETE, " + std::to_string(this->OB.tickCount) + " ticks, opening in " + es.sessionString[this->OB.session] });
 	}
 }
 
