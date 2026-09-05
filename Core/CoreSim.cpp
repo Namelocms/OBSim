@@ -20,7 +20,11 @@ void CoreSim::run(SimClock& clock) {
 	this->initAgents(this->parameters.agentStartCount);
 
 	//std::cout << "Initializing Market..." << std::endl;
-	this->initMarket(this->parameters.initializationTicks, clock);
+	// TEMPORARY: the tick-count warmup is replaced by the time-bounded back-data run
+	// driven by parameters.backDataDurationMs(). Until then this preserves the
+	// previous behavior so the sim keeps running between steps.
+	constexpr unsigned int LEGACY_INIT_TICKS = 1;
+	this->initMarket(LEGACY_INIT_TICKS, clock);
 
 	clock.start();
 	this->isRunning = true;
@@ -265,10 +269,12 @@ void CoreSim::scheduleNextEventCall(std::shared_ptr<Agent> agent, double simTime
 
 // ---- Utility Functions ----
 
-void CoreSim::setParameters(unsigned int seed, unsigned int initializationTicks, unsigned short agentStartCount, unsigned int obShareFloat, double obStartPrice) {
-	
+void CoreSim::setParameters(unsigned int seed, unsigned int backDataDays, Session liveStartSession, unsigned int minLiquidity, unsigned short agentStartCount, unsigned int obShareFloat, double obStartPrice) {
+
 	this->parameters.seed = seed;
-	this->parameters.initializationTicks = initializationTicks;
+	this->parameters.backDataDays = backDataDays;
+	this->parameters.liveStartSession = liveStartSession;
+	this->parameters.minLiquidity = minLiquidity;
 	this->parameters.agentStartCount = agentStartCount;
 	this->parameters.obShareFloat = obShareFloat;
 	this->parameters.obStartPrice = obStartPrice;

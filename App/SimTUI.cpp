@@ -68,11 +68,11 @@ void SimTUI::run() {
 
     // ---- Reset dialog field states ----
     std::vector<std::string*> resetFields = {
-        &resetDraft_.seed, &resetDraft_.initTicks, &resetDraft_.agentCount,
+        &resetDraft_.seed, &resetDraft_.backDataDays, &resetDraft_.agentCount,
         &resetDraft_.shareFloat, &resetDraft_.startPrice
     };
     const std::vector<std::string> resetLabels = {
-        "Seed", "Init Ticks", "Agents", "Share Float", "Start Price"
+        "Seed", "Back Data (d)", "Agents", "Share Float", "Start Price"
     };
 
     // ---- Install sim callbacks ----
@@ -156,7 +156,7 @@ void SimTUI::run() {
                     catch (...) { return def; }
                     };
                 unsigned newSeed = toUInt(resetDraft_.seed, 1);
-                unsigned newInitTicks = toUInt(resetDraft_.initTicks, 100);
+                unsigned newBackDataDays = toUInt(resetDraft_.backDataDays, 1);
                 unsigned short newAgentCount = (unsigned short)toUInt(resetDraft_.agentCount, 100);
                 unsigned newShareFloat = toUInt(resetDraft_.shareFloat, 250000);
                 double   newStartPrice = toDbl(resetDraft_.startPrice, 1.0);
@@ -172,7 +172,8 @@ void SimTUI::run() {
                 std::priority_queue<EventCall, std::vector<EventCall>, CompareEventCalls> empty;
                 std::swap(sim_.eventCallQueue, empty);
 
-                sim_.setParameters(newSeed, newInitTicks,
+                // Live start session and min liquidity get their own dialog fields in a later step
+                sim_.setParameters(newSeed, newBackDataDays, Session::REGULAR, 0,
                     newAgentCount, newShareFloat, newStartPrice);
                 simDone_.store(false);
 
@@ -687,10 +688,10 @@ Element SimTUI::buildControls_() {
 
 Element SimTUI::buildResetDialog_() {
     const std::vector<std::string> labels = {
-        "Seed", "Init Ticks", "Agent Count", "Share Float", "Start Price"
+        "Seed", "Back Data (days)", "Agent Count", "Share Float", "Start Price"
     };
     std::vector<std::string*> fields = {
-        &resetDraft_.seed, &resetDraft_.initTicks, &resetDraft_.agentCount,
+        &resetDraft_.seed, &resetDraft_.backDataDays, &resetDraft_.agentCount,
         &resetDraft_.shareFloat, &resetDraft_.startPrice
     };
 

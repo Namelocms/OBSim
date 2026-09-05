@@ -32,7 +32,7 @@ struct Candle {
 
 struct ResetParams {
     std::string seed = "1";
-    std::string initTicks = "100";
+    std::string backDataDays = "1";
     std::string agentCount = "100";
     std::string shareFloat = "250000";
     std::string startPrice = "1.00";
