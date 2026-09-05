@@ -237,6 +237,7 @@ std::shared_ptr<Order> Agent::makeMarketBid() {
 	if (maxPurchasable < 1) { return nullptr; }
 
 	int chosenVol = randomInt(1, maxPurchasable);
+	double totalValue = roundTo(chosenVol * this->OB.currentPrice);
 
 	std::shared_ptr<Order> order = std::make_shared<Order>(
 		this->OB.makeId(ID_TYPE::ORDER),
@@ -245,8 +246,12 @@ std::shared_ptr<Order> Agent::makeMarketBid() {
 		chosenVol,
 		this->OB.clock->simTimeMs,
 		OrderAction::BID,
-		OrderType::MARKET
+		OrderType::MARKET,
+		std::vector<Holding>{},
+		totalValue
 	);
+
+	this->updateCash(-totalValue);
 
 	return order;
 }

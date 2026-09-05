@@ -22,6 +22,8 @@ public:
 	const OrderAction side;
 	const OrderType type;
 	std::vector<Holding> reservedShares;
+	/* Cash escrowed against this bid at placement time, drawn down as the order fills and refunded when unused */
+	double reservedCash;
 
 	Order() = default;
 	Order(
@@ -32,7 +34,8 @@ public:
 		double timestamp,
 		const OrderAction side,
 		const OrderType type,
-		std::vector<Holding> reservedShares = {}
+		std::vector<Holding> reservedShares = {},
+		double reservedCash = 0.0
 	);
 
 	/* Get unsold shares from the calling Order */

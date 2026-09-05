@@ -3,6 +3,7 @@
 #include "include/Agent.h"
 #include "include/Util.h"
 #include "include/SimClock.h"
+#include "include/MarketCalendar.h"
 
 OrderBook::OrderBook(double currentPrice, unsigned int shareFloat) : clock(clock), currentPrice(currentPrice), shareFloat(shareFloat) {
 	this->setTickPrecision(currentPrice);
@@ -10,7 +11,7 @@ OrderBook::OrderBook(double currentPrice, unsigned int shareFloat) : clock(clock
 	this->marketNeutralSentiment = 0.00;
 	this->shareFloat = (shareFloat == 0) ? randomInt(100'000, 100'000'000) : shareFloat;
 	this->TICKER_SYMBOL = this->makeTickerSymbol();
-	this->session = Session::PREMARKET;
+	this->session = MarketCalendar::sessionAt(0.0); // Sim time starts at the day 0 premarket open
 }
 
 // ---- Agent Operations ----
@@ -145,7 +146,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->numAsks = 0;
 	this->numBids = 0;
 	this->TICKER_SYMBOL = this->makeTickerSymbol();
-	this->session = Session::PREMARKET;
+	this->session = MarketCalendar::sessionAt(0.0); // Sim time is reset to the day 0 premarket open
 	if (clearAgents) {
 		this->nextOrderId = 1;
 		this->nextAgentId = 1;
