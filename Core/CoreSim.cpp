@@ -26,7 +26,16 @@ void CoreSim::run(SimClock& clock) {
 	constexpr unsigned int LEGACY_INIT_TICKS = 1;
 	this->initMarket(LEGACY_INIT_TICKS, clock);
 
+	// TEMPORARY: the tick-based warmup runs entirely at t = 0, which the calendar
+	// reads as premarket. Start the live sim at the regular open so session driven
+	// behavior matches the previous default. Step 5 replaces this with a real
+	// handoff at the configured liveStartSession.
+	this->skipToTime(MarketCalendar::sessionOpenMs(Session::REGULAR, 0), clock);
+	this->OB.session = MarketCalendar::sessionAt(clock.simTimeMs);
+	this->nextBoundaryMs = MarketCalendar::nextBoundaryMs(clock.simTimeMs);
+
 	clock.start();
+	clock.resume(); // recalibrate the wall clock against a non-zero sim start time
 	this->isRunning = true;
 	this->shouldGetSnapshot = false;
 	long long lastTick = 0;
@@ -41,6 +50,13 @@ void CoreSim::run(SimClock& clock) {
 		if (this->eventCallQueue.empty()) {
 			this->isRunning = false;
 			break;
+		}
+
+		// Cross any session boundaries the next event would jump over, before it fires.
+		// Read the call time first, an overnight skip rebuilds the queue underneath us.
+		double nextCallTime = this->eventCallQueue.top().callTime;
+		if (nextCallTime >= this->nextBoundaryMs) {
+			if (this->processSessionBoundaries(nextCallTime, clock)) { continue; }
 		}
 
 		const EventCall& nextEventCall = this->eventCallQueue.top();
@@ -253,6 +269,69 @@ void CoreSim::initMarket(unsigned int _tickCount, SimClock& clock) {
 	// Schedule initial event calls
 	for (const auto& kv : this->OB.agents) {
 		scheduleNextEventCall(kv.second, clock.simTimeMs);
+	}
+}
+
+// ---- Session Functions ----
+
+bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) {
+	bool queueRebuilt = false;
+
+	while (targetSimTimeMs >= this->nextBoundaryMs) {
+		double boundaryMs = this->nextBoundaryMs;
+		Session endingSession = this->OB.session;
+
+		// Expire resting orders when the closing session expires them.
+		// PREMARKET is skipped, it rolls into REGULAR the way it does in real markets.
+		if (MarketCalendar::expiresAtSessionEnd(endingSession)) {
+			unsigned int expiredCount = this->OB.expireOrders(boundaryMs);
+			if (expiredCount > 0 && this->onLog) {
+				this->onLog({ LogEntry::Kind::CANCEL, boundaryMs, "EXPIRED " + std::to_string(expiredCount) + " orders" });
+			}
+		}
+
+		this->OB.session = MarketCalendar::sessionAt(boundaryMs);
+		if (this->onLog) {
+			EnumStrings es;
+			this->onLog({ LogEntry::Kind::HOLD, boundaryMs, "SESSION " + es.sessionString[this->OB.session] });
+		}
+
+		// Only a small share of overnight windows are worth simulating, the rest
+		// are skipped so the clock lands straight on the next premarket open
+		if (this->OB.session == Session::OVERNIGHT && randomDouble(0.0, 1.0) > OVERNIGHT_SIM_PROBABILITY) {
+			double resumeAtMs = MarketCalendar::sessionEndMs(boundaryMs); // overnight ends at the next day's premarket open
+
+			this->skipToTime(resumeAtMs, clock);
+			queueRebuilt = true;
+
+			this->OB.session = MarketCalendar::sessionAt(resumeAtMs);
+			this->nextBoundaryMs = MarketCalendar::nextBoundaryMs(resumeAtMs);
+
+			if (this->onLog) {
+				EnumStrings es;
+				this->onLog({ LogEntry::Kind::HOLD, resumeAtMs, "SKIPPED OVERNIGHT, SESSION " + es.sessionString[this->OB.session] });
+			}
+
+			// The queue now holds freshly scheduled events, the caller must re-read it
+			return queueRebuilt;
+		}
+
+		this->nextBoundaryMs = MarketCalendar::nextBoundaryMs(boundaryMs);
+	}
+
+	return queueRebuilt;
+}
+void CoreSim::skipToTime(double resumeAtMs, SimClock& clock) {
+	clock.simTimeMs = resumeAtMs;
+
+	// Drop events left sitting inside the skipped window, they would otherwise
+	// fire immediately and out of order on the far side of the jump
+	std::priority_queue<EventCall, std::vector<EventCall>, CompareEventCalls> emptyQueue;
+	std::swap(this->eventCallQueue, emptyQueue);
+
+	// Every agent gets exactly one pending event again, scheduled from the resume point
+	for (const auto& kv : this->OB.agents) {
+		this->scheduleNextEventCall(kv.second, resumeAtMs);
 	}
 }
 

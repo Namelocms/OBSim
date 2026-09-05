@@ -55,6 +55,13 @@ struct Config {
     }
 };
 
+/* Chance that any given overnight session is actually simulated
+*
+* Kept proportional to how little of the real overnight window is tradeable.
+* When the roll fails the clock jumps straight to the next premarket open.
+*/
+inline constexpr double OVERNIGHT_SIM_PROBABILITY = 0.09;
+
 struct EventCall {
     double callTime;
     std::string agentId;
@@ -77,6 +84,8 @@ public:
     std::function<void(LogEntry)> onLog;
     std::function<void()> onTick;
     std::priority_queue<EventCall, std::vector<EventCall>, CompareEventCalls> eventCallQueue;
+    /* Sim time of the next session change, drives boundary processing in both loops */
+    double nextBoundaryMs = 0.0;
 
     // ---- Main Simulation Loop ----
 
@@ -86,6 +95,20 @@ public:
 
     void initAgents(unsigned short _agentStartCount);
     void initMarket(unsigned int _tickCount, SimClock& clock);
+
+    // ---- Session Functions ----
+
+    /* Process every session boundary falling between the current session and targetSimTimeMs
+    *
+    * Expires resting orders when an expiring session closes, advances OB.session,
+    * and decides whether each overnight window is simulated or skipped. Shared by
+    * the back-data run and the live loop.
+    * Returns true if the event queue was rebuilt (overnight skip), meaning the
+    * caller must re-read the top of the queue rather than reusing it.
+    */
+    bool processSessionBoundaries(double targetSimTimeMs, SimClock& clock);
+    /* Jump the clock to resumeAtMs, drop stale events, and reschedule every agent from there */
+    void skipToTime(double resumeAtMs, SimClock& clock);
 
     // ---- Event Functions ----
 
