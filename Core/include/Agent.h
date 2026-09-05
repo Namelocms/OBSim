@@ -107,6 +107,13 @@ public:
 // ---- Utility Operations ----
 	/* Resets the agent to its initial state */
 	void resetToInitial(double initialCash = 100.00);
+	/* Roll the sim time a limit order placed at nowMs should expire at
+	*
+	* Defaults to the next expiring session boundary (the day order equivalent).
+	* Each additional boundary survived is another coin flip, so no more than
+	* half of all orders survive any single expiring boundary.
+	*/
+	double rollOrderExpiry(double nowMs);
 	/* Get random price within custom beta distribution
 	*
 	* Can be shaped to hug the current price without reaching it: [a > b: hugs lower end || a < b: hugs upper end].
@@ -118,6 +125,8 @@ public:
 	double getBetaPrice(double currentPrice, OrderAction side, double a = 2.0, double b = 5.0, double epsilon = 0.0001);
 
 private:
+	/* Most additional expiring session boundaries a limit order can survive beyond its default */
+	static constexpr int MAX_EXPIRY_BOUNDARIES_SURVIVED = 3;
 	/* Anchor points for each agent's sentiment to action softmax calculations, [SELL, HOLD, BUY] */
 	const std::vector<double> sentimentAnchors = { -1.0, 0.0, 1.0 };
 	std::vector<OrderAction> sentimentActions;

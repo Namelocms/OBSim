@@ -6,6 +6,7 @@
 #include "include/OrderBook.h"
 #include "include/MatchingEngine.h"
 #include "include/SimClock.h"
+#include "include/MarketCalendar.h"
 
 Agent::Agent(std::string id, double reactionTimeFloor, double cash, AgentStatus status, AgentType type, AgentSubType subType, OrderBook& ob, MatchingEngine& me) :
 	id(id), 
@@ -265,7 +266,9 @@ std::shared_ptr<Order> Agent::makeLimitBid() {
 		chosenVol,
 		this->OB.clock->simTimeMs,
 		OrderAction::BID,
-		OrderType::LIMIT
+		OrderType::LIMIT,
+		std::vector<Holding>{},
+		this->rollOrderExpiry(this->OB.clock->simTimeMs)
 	);
 
 	this->updateCash(-totalValue);
@@ -311,7 +314,8 @@ std::shared_ptr<Order> Agent::makeLimitAsk() {
 		this->OB.clock->simTimeMs,
 		OrderAction::ASK,
 		OrderType::LIMIT,
-		reservedHoldings
+		reservedHoldings,
+		this->rollOrderExpiry(this->OB.clock->simTimeMs)
 	);
 
 	return order;
@@ -341,6 +345,19 @@ void Agent::hold() {
 
 // ---- Utility Operations ----
 
+double Agent::rollOrderExpiry(double nowMs) {
+	// Day order equivalent, expires when the current session's expiring boundary is reached
+	double expiry = MarketCalendar::nextExpiryBoundaryMs(nowMs);
+
+	// Each extra boundary survived is a coin flip, so at most half of all orders
+	// survive any single boundary, half of those survive the next, and so on
+	for (int i = 0; i < MAX_EXPIRY_BOUNDARIES_SURVIVED; ++i) {
+		if (randomInt(0, 1) != 0) { break; }
+		expiry = MarketCalendar::nextExpiryBoundaryMs(expiry);
+	}
+
+	return expiry;
+}
 void Agent::resetToInitial(double initialCash) {
 	this->cash = initialCash;
 	this->status = AgentStatus::INACTIVE;

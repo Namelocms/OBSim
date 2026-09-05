@@ -23,19 +23,25 @@ struct PriceTime {
 struct CompareBid {
 public:
 	bool operator()(const std::shared_ptr<Order>& o1, const std::shared_ptr<Order>& o2) const {
-		if (o1->price == o2->price) {
+		if (o1->price != o2->price) {
+			return o1->price > o2->price; // higher price first
+		}
+		if (o1->timestamp != o2->timestamp) {
 			return o1->timestamp > o2->timestamp; // earlier timestamp first
 		}
-		return o1->price > o2->price; // higher price first
+		return o1->id < o2->id; // unique tiebreak, two distinct orders must never compare equal
 	}
 };
 struct CompareAsk {
 public:
 	bool operator()(const std::shared_ptr<Order>& o1, const std::shared_ptr<Order>& o2) const {
-		if (o1->price == o2->price) {
+		if (o1->price != o2->price) {
+			return o1->price < o2->price; // lower price first
+		}
+		if (o1->timestamp != o2->timestamp) {
 			return o1->timestamp > o2->timestamp; // earlier timestamp first
 		}
-		return o1->price < o2->price; // lower price first
+		return o1->id < o2->id; // unique tiebreak, two distinct orders must never compare equal
 	}
 };
 
@@ -84,6 +90,12 @@ public:
 	void cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent> agent);
 	/* Order was filled, remove from queue, update status to CLOSED */
 	void fillOrder(std::shared_ptr<Order> order, int volFilled);
+	/* Cancel every resting order whose expiry has been reached, return how many were expired
+	*
+	* Called when an expiring session boundary is crossed. Every cancellation goes
+	* through cancelOrder so escrowed cash and reserved shares are returned.
+	*/
+	unsigned int expireOrders(double nowMs);
 
 // ---- Utility Operations ----
 	/* Update current price and tick precision */
@@ -94,6 +106,10 @@ public:
 	Snapshot getSnapshot(unsigned char depth = 10);
 	/* Get current tick count from given start index in tickHistory */
 	int getTick(int startTick = 0);
+	/* Get the number of open bids resting in the book */
+	int getNumBids() const { return this->numBids; }
+	/* Get the number of open asks resting in the book */
+	int getNumAsks() const { return this->numAsks; }
 	/* Resets the LOB to its initial state */
 	void resetToInitial(double initialPrice, unsigned int shareFloat = 0, bool clearAgents = false);
 

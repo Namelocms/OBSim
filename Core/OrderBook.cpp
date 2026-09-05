@@ -32,13 +32,13 @@ void OrderBook::addOrder(std::shared_ptr<Order> order) {
 	if (order == nullptr) { return; }
 
 	//this->orderHistory.emplace(order->id, order);
+	// Only count the order if it actually entered the queue, the counters must
+	// never drift away from the real contents of the book
 	if (order->side == OrderAction::BID) {
-		this->bidQueue.insert(order);
-		this->numBids++;
+		if (this->bidQueue.insert(order).second) { this->numBids++; }
 	}
 	else {
-		this->askQueue.insert(order);
-		this->numAsks++;
+		if (this->askQueue.insert(order).second) { this->numAsks++; }
 	}
 }
 void OrderBook::cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent> agent) {
@@ -79,6 +79,27 @@ void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 		this->tickCount++;
 		this->tickHistory.push_back(PriceTime(this->currentPrice, this->clock->simTimeMs));
 	}
+}
+
+unsigned int OrderBook::expireOrders(double nowMs) {
+	std::vector<std::shared_ptr<Order>> expiredOrders;
+
+	// Collect before cancelling, cancelOrder erases from the queue being iterated
+	for (const std::shared_ptr<Order>& order : this->bidQueue) {
+		if (order->status == OrderStatus::OPEN && order->expiresAtMs <= nowMs) { expiredOrders.push_back(order); }
+	}
+	for (const std::shared_ptr<Order>& order : this->askQueue) {
+		if (order->status == OrderStatus::OPEN && order->expiresAtMs <= nowMs) { expiredOrders.push_back(order); }
+	}
+
+	// Route through cancelOrder so escrowed cash and reserved shares are returned
+	for (const std::shared_ptr<Order>& order : expiredOrders) {
+		auto agent = this->agents.find(order->agentId);
+		if (agent == this->agents.end()) { continue; }
+		this->cancelOrder(order, agent->second);
+	}
+
+	return unsigned int(expiredOrders.size());
 }
 
 // ---- Utility Operations ----

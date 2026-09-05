@@ -123,4 +123,29 @@ inline bool isActiveSession(Session session) {
 	return session == Session::PREMARKET || session == Session::REGULAR || session == Session::AFTERHOURS;
 }
 
+// ---- Order Expiry Operations ----
+
+/* Check whether resting orders expire when the given session closes
+*
+* PREMARKET is NOT an expiring boundary. It rolls straight into REGULAR the way
+* it does in real markets, so a day order placed premarket stays live through
+* the regular session.
+*/
+inline bool expiresAtSessionEnd(Session session) {
+	return session == Session::REGULAR || session == Session::AFTERHOURS || session == Session::OVERNIGHT;
+}
+/* Get the sim time of the next boundary that expires resting orders
+*
+* This is the end of the current session, except from PREMARKET, which rolls
+* into REGULAR and so expires at the regular close instead.
+* Chaining is safe: passing a returned boundary back in yields the following one.
+*/
+inline double nextExpiryBoundaryMs(double simTimeMs) {
+	Session session = sessionAt(simTimeMs);
+	if (expiresAtSessionEnd(session)) { return sessionEndMs(simTimeMs); }
+
+	// PREMARKET (and reserved CLOSED) roll forward to the regular close
+	return dayStartMs(dayIndex(simTimeMs)) + sessionOffsetMs(Session::REGULAR) + sessionLengthMs(Session::REGULAR);
+}
+
 }
