@@ -121,11 +121,14 @@ void Agent::actRandom() {
 			// to cap slippage rather than sending naked market orders
 			if (this->type == AgentType::INSTITUTION || this->subType == AgentSubType::ALGO) { break; }
 			order = this->makeMarketBid();
+			// An agent that cannot afford or source the order simply does nothing
+			if (order == nullptr) { break; }
 			this->ME.matchMarketBid(order);
 			break;
 		case OrderType::LIMIT:
 			if (this->subType == AgentSubType::ALGO && this->activeBids.size() > 0) { break; }
 			order = this->makeLimitBid();
+			if (order == nullptr) { break; }
 			this->ME.matchLimitBid(order);
 			break;
 		}
@@ -136,11 +139,13 @@ void Agent::actRandom() {
 			if (this->OB.session != Session::REGULAR) { break; }
 			if (this->type == AgentType::INSTITUTION || this->subType == AgentSubType::ALGO) { break; }
 			order = this->makeMarketAsk();
+			if (order == nullptr) { break; }
 			this->ME.matchMarketAsk(order);
 			break;
 		case OrderType::LIMIT:
 			if (this->subType == AgentSubType::ALGO && this->activeAsks.size() > 0) { break; }
 			order = this->makeLimitAsk();
+			if (order == nullptr) { break; }
 			this->ME.matchLimitAsk(order);
 			break;
 		}
@@ -256,8 +261,18 @@ std::shared_ptr<Order> Agent::makeMarketBid() {
 	return order;
 }
 std::shared_ptr<Order> Agent::makeLimitBid() {
-	double chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::BID);
+	// Crossing orders are priced off the opposite touch, passive ones off the last trade
+	double chosenPrice = this->rollAggressive() ? this->getMarketablePrice(OrderAction::BID) : -1.0;
+	if (chosenPrice <= 0.0) { chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::BID); }
+
 	int maxPurchasable = int(this->cash / chosenPrice);
+
+	// Crossing costs more than resting. An agent that cannot afford to take
+	// liquidity posts passively instead of sitting the turn out.
+	if (maxPurchasable < 1) {
+		chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::BID);
+		maxPurchasable = int(this->cash / chosenPrice);
+	}
 	if (maxPurchasable < 1) { return nullptr; }
 
 	int chosenVol = randomInt(1, maxPurchasable);
@@ -301,7 +316,10 @@ std::shared_ptr<Order> Agent::makeMarketAsk() {
 	return order;
 }
 std::shared_ptr<Order> Agent::makeLimitAsk() {
-	double chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::ASK);
+	// Crossing orders are priced off the opposite touch, passive ones off the last trade
+	double chosenPrice = this->rollAggressive() ? this->getMarketablePrice(OrderAction::ASK) : -1.0;
+	if (chosenPrice <= 0.0) { chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::ASK); }
+
 	int chosenVol = 1;
 
 	int totalHoldings = this->getTotalHoldings();
@@ -390,6 +408,39 @@ double Agent::getBetaPrice(double currentPrice, OrderAction side, double a, doub
 		return betaPrice;
 	}
 	return roundTo(currentPrice, this->OB.tickPrecision);
+}
+bool Agent::rollAggressive() {
+	double aggression = 0.0;
+
+	switch (this->subType) {
+	case AgentSubType::NOISE:    aggression = AGGRESSION_NOISE;    break;
+	case AgentSubType::MOMENTUM: aggression = AGGRESSION_MOMENTUM; break;
+	case AgentSubType::INFORMED: aggression = AGGRESSION_INFORMED; break;
+	case AgentSubType::ALGO:     aggression = AGGRESSION_ALGO;     break;
+	}
+
+	return randomDouble(0.0, 1.0) < aggression;
+}
+double Agent::getMarketablePrice(OrderAction side, double epsilon) {
+	// Price against the opposite touch, that is what makes the order marketable
+	OrderAction oppositeSide = (side == OrderAction::BID) ? OrderAction::ASK : OrderAction::BID;
+	std::vector<std::shared_ptr<Order>> opposite = this->OB.peekBestN(oppositeSide, 1);
+
+	// Nothing to cross, caller falls back to a passive price
+	if (opposite.empty() || opposite[0] == nullptr) { return -1.0; }
+
+	double touch = opposite[0]->price;
+	if (touch <= 0.0) { return -1.0; }
+
+	// Willingness to reach past the touch, most orders take only the top level
+	double slip = sampleBeta(2.0, 5.0) * this->getMaxVariance(touch) * MARKETABLE_SLIP_SCALE;
+
+	double preRounded = (side == OrderAction::BID)
+		? touch * (1.0 + slip)
+		: std::max(touch * (1.0 - slip), epsilon);
+
+	double precision = (preRounded < 1.00) ? 0.0001 : 0.01;
+	return roundTo(preRounded, precision);
 }
 double Agent::getMaxVariance(double price, double scale, double decayRate, double amplitude, double frequency) {
 	return scale * (pow(price, -decayRate)) * (1 + (amplitude * sin(frequency * log(price))));

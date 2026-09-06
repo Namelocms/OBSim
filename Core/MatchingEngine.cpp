@@ -11,6 +11,8 @@ MatchingEngine::MatchingEngine(OrderBook& ob) : OB(ob) {}
 // ---- BID Operations ----
 
 void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
+	if (order == nullptr) { return; }
+
 	std::shared_ptr<Agent> biddingAgent = this->OB.agents[order->agentId];
 	std::shared_ptr<Agent> askingAgent;
 	std::shared_ptr<Order> bestAsk;
@@ -82,6 +84,8 @@ void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
 	}
 }
 void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
+	if (order == nullptr) { return; }
+
 	std::shared_ptr<Agent> biddingAgent = this->OB.agents[order->agentId];
 	std::shared_ptr<Agent> askingAgent;
 	std::shared_ptr<Order> bestAsk;
@@ -138,6 +142,13 @@ void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
 		else { break; }
 	}
 
+	// Self trade protection killed this order before it could rest. Refund the
+	// escrow and keep it out of the book, it must not be counted or left behind.
+	if (order->status == OrderStatus::CANCELED) {
+		if (order->volume > 0) { biddingAgent->updateCash(order->price * order->volume); }
+		return;
+	}
+
 	if (order->volume > 0) {
 		biddingAgent->upsertActiveOrder(order);
 		this->OB.addOrder(order);
@@ -157,6 +168,8 @@ void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
 // ---- ASK Operations ----
 
 void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
+	if (order == nullptr) { return; }
+
 	std::shared_ptr<Agent> askingAgent = this->OB.agents[order->agentId];
 	std::shared_ptr<Agent> biddingAgent;
 	std::shared_ptr<Order> bestBid;
@@ -233,6 +246,8 @@ void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
 	}
 }
 void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
+	if (order == nullptr) { return; }
+
 	std::shared_ptr<Agent> askingAgent = this->OB.agents[order->agentId];
 	std::shared_ptr<Agent> biddingAgent;
 	std::shared_ptr<Order> bestBid;
@@ -280,6 +295,14 @@ void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
 			it = this->OB.bidQueue.erase(it);
 		}
 		else { break; }
+	}
+
+	// Self trade protection killed this order before it could rest. Return the
+	// reserved shares and keep it out of the book.
+	if (order->status == OrderStatus::CANCELED) {
+		std::vector<Holding> returnableShares = order->getReturnableShares();
+		for (Holding h : returnableShares) { askingAgent->upsertHolding(h); }
+		return;
 	}
 
 	if (order->volume > 0) {

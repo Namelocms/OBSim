@@ -15,6 +15,25 @@ class Holding;
 
 const double PI = 3.14159265358979323846;
 
+/* ---- Marketable limit aggression ----
+*
+* Probability an agent prices a limit order to CROSS the spread rather than rest
+* passively behind it. Flow that wants immediate execution sends a marketable
+* limit, priced through the opposite touch, rather than a naked market order.
+* That is how institutions and algos take liquidity while still capping slippage,
+* and it is the only crossing mechanism available outside regular hours.
+*
+* Passive quoting agents (ALGO) should almost never cross, takers cross readily,
+* and informed traders cross most since their edge decays.
+*/
+inline constexpr double AGGRESSION_NOISE = 0.20;
+inline constexpr double AGGRESSION_MOMENTUM = 0.30;
+inline constexpr double AGGRESSION_INFORMED = 0.40;
+inline constexpr double AGGRESSION_ALGO = 0.02;
+/* How far past the opposite touch a marketable order will reach, as a fraction
+*  of the agent's normal price variance. This is the slippage cap. */
+inline constexpr double MARKETABLE_SLIP_SCALE = 0.50;
+
 class Agent : public std::enable_shared_from_this<Agent> {
 public:
 	/* Agent's unique ID */
@@ -139,6 +158,15 @@ public:
 	* epsilon = Minimum possible price.
 	*/
 	double getBetaPrice(double currentPrice, OrderAction side, double a = 2.0, double b = 5.0, double epsilon = 0.0001);
+	/* Roll whether this order should be priced to cross the spread, weighted by subtype */
+	bool rollAggressive();
+	/* Get a marketable limit price, referenced to the opposite touch rather than the last trade
+	*
+	* Returns a price at or through the best opposite order, so the order executes
+	* on arrival while still capping how far it will reach. Returns -1.0 when that
+	* side of the book is empty, and the caller falls back to a passive price.
+	*/
+	double getMarketablePrice(OrderAction side, double epsilon = 0.0001);
 
 private:
 	/* Most additional expiring session boundaries a limit order can survive beyond its default */
