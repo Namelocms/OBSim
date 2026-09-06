@@ -120,8 +120,13 @@ public:
 
 class CoreSim {
 public:
-    bool isRunning;
-    bool shouldGetSnapshot;
+    /* True while the live event loop is running
+    *
+    * run() assigns this before the loop starts, but it is read from the UI thread and
+    * from tests, so it must be false rather than indeterminate before run() is called.
+    */
+    bool isRunning = false;
+    bool shouldGetSnapshot = false;
     OrderBook OB;
     MatchingEngine ME = MatchingEngine(this->OB);
     std::function<void(LogEntry)> onLog;

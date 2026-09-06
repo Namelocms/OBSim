@@ -84,6 +84,21 @@ public:
 // ---- Agent Operations ----
 	/* Update or insert an agent to the agents map */
 	void upsertAgent(std::shared_ptr<Agent> agent);
+	/* Look up an agent by id, returns nullptr when there is no such agent
+	*
+	* Always use this rather than agents[id]. operator[] default constructs a null
+	* shared_ptr for a missing key, so a lookup that misses silently INSERTS a null
+	* entry: the map grows, agents.size() is wrong, and the next sweep dereferences it.
+	*/
+	std::shared_ptr<Agent> getAgent(const std::string& agentId) const;
+	/* Whether this agent currently has any order resting in either queue
+	*
+	* An Order carries only its agent's id, so an id that is reused while the previous
+	* holder still has orders in the book would hand those fills and their escrow to
+	* the wrong agent. This is the precondition an agent id must satisfy before it can
+	* be recycled.
+	*/
+	bool agentHasRestingOrders(const std::string& agentId) const;
 
 // ---- Order Operations ----
 	/* Get the best active bid/ask and remove it from the queue */

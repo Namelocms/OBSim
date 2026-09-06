@@ -13,7 +13,7 @@ MatchingEngine::MatchingEngine(OrderBook& ob) : OB(ob) {}
 void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
 	if (order == nullptr) { return; }
 
-	std::shared_ptr<Agent> biddingAgent = this->OB.agents[order->agentId];
+	std::shared_ptr<Agent> biddingAgent = this->OB.getAgent(order->agentId);
 	std::shared_ptr<Agent> askingAgent;
 	std::shared_ptr<Order> bestAsk;
 	unsigned int tradeVol = 0;
@@ -26,7 +26,7 @@ void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
 	auto it = this->OB.askQueue.begin();
 	while (it != this->OB.askQueue.end() && order->volume > 0) {
 		bestAsk = *it;
-		askingAgent = this->OB.agents[bestAsk->agentId];
+		askingAgent = this->OB.getAgent(bestAsk->agentId);
 
 		// Clean stagnant canceled orders
 		if (bestAsk->status == OrderStatus::CANCELED) {
@@ -86,7 +86,7 @@ void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
 void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
 	if (order == nullptr) { return; }
 
-	std::shared_ptr<Agent> biddingAgent = this->OB.agents[order->agentId];
+	std::shared_ptr<Agent> biddingAgent = this->OB.getAgent(order->agentId);
 	std::shared_ptr<Agent> askingAgent;
 	std::shared_ptr<Order> bestAsk;
 	unsigned int tradeVol = 0;
@@ -98,7 +98,7 @@ void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
 	auto it = this->OB.askQueue.begin();
 	while (it != this->OB.askQueue.end() && order->volume > 0) {
 		bestAsk = *it;
-		askingAgent = this->OB.agents[bestAsk->agentId];
+		askingAgent = this->OB.getAgent(bestAsk->agentId);
 
 		// Prevent trading with higher priced ask limit orders
 		if (bestAsk->price > order->price) { break; }
@@ -170,7 +170,7 @@ void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
 void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
 	if (order == nullptr) { return; }
 
-	std::shared_ptr<Agent> askingAgent = this->OB.agents[order->agentId];
+	std::shared_ptr<Agent> askingAgent = this->OB.getAgent(order->agentId);
 	std::shared_ptr<Agent> biddingAgent;
 	std::shared_ptr<Order> bestBid;
 	unsigned int tradeVol = 0;
@@ -182,7 +182,7 @@ void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
 	auto it = this->OB.bidQueue.begin();
 	while (it != this->OB.bidQueue.end() && order->volume > 0) {
 		bestBid = *it;
-		biddingAgent = this->OB.agents[bestBid->agentId];
+		biddingAgent = this->OB.getAgent(bestBid->agentId);
 
 		// Clean stagnant canceled orders
 		if (bestBid->status == OrderStatus::CANCELED) {
@@ -248,7 +248,7 @@ void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
 void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
 	if (order == nullptr) { return; }
 
-	std::shared_ptr<Agent> askingAgent = this->OB.agents[order->agentId];
+	std::shared_ptr<Agent> askingAgent = this->OB.getAgent(order->agentId);
 	std::shared_ptr<Agent> biddingAgent;
 	std::shared_ptr<Order> bestBid;
 	unsigned int tradeVol = 0;
@@ -259,7 +259,7 @@ void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
 	auto it = this->OB.bidQueue.begin();
 	while (it != this->OB.bidQueue.end() && order->volume > 0) {
 		bestBid = *it;
-		biddingAgent = this->OB.agents[bestBid->agentId];
+		biddingAgent = this->OB.getAgent(bestBid->agentId);
 
 		// Prevent trading with higher priced ask limit orders
 		if (bestBid->price < order->price) { break; }

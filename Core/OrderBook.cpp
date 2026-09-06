@@ -19,6 +19,20 @@ OrderBook::OrderBook(double currentPrice, unsigned int shareFloat) : clock(clock
 void OrderBook::upsertAgent(std::shared_ptr<Agent> agent) {
 	this->agents.insert_or_assign(agent->id, agent);
 }
+std::shared_ptr<Agent> OrderBook::getAgent(const std::string& agentId) const {
+	auto found = this->agents.find(agentId);
+	if (found == this->agents.end()) { return nullptr; }
+	return found->second;
+}
+bool OrderBook::agentHasRestingOrders(const std::string& agentId) const {
+	for (const std::shared_ptr<Order>& order : this->bidQueue) {
+		if (order->agentId == agentId && order->status != OrderStatus::CANCELED) { return true; }
+	}
+	for (const std::shared_ptr<Order>& order : this->askQueue) {
+		if (order->agentId == agentId && order->status != OrderStatus::CANCELED) { return true; }
+	}
+	return false;
+}
 
 // ---- Order Operations ----
 
@@ -64,7 +78,7 @@ void OrderBook::cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent>
 void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 	if (order == nullptr) { return; }
 
-	std::shared_ptr<Agent> agent = this->agents[order->agentId];
+	std::shared_ptr<Agent> agent = this->getAgent(order->agentId);
 
 	// A backed off quoting agent needs to act on being hit, on partial fills too,
 	// rather than sitting idle until its next scheduled event
@@ -81,7 +95,8 @@ void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 		else {
 			this->numAsks--; 
 		}
-		agent->removeActiveOrder(order);
+		// The agent may be gone by the time its resting order is closed out
+		if (agent != nullptr) { agent->removeActiveOrder(order); }
 		this->tickCount++;
 		this->tickHistory.push_back(PriceTime(this->currentPrice, this->clock->simTimeMs));
 	}
@@ -100,9 +115,9 @@ unsigned int OrderBook::expireOrders(double nowMs) {
 
 	// Route through cancelOrder so escrowed cash and reserved shares are returned
 	for (const std::shared_ptr<Order>& order : expiredOrders) {
-		auto agent = this->agents.find(order->agentId);
-		if (agent == this->agents.end()) { continue; }
-		this->cancelOrder(order, agent->second);
+		std::shared_ptr<Agent> agent = this->getAgent(order->agentId);
+		if (agent == nullptr) { continue; }
+		this->cancelOrder(order, agent);
 	}
 
 	return unsigned int(expiredOrders.size());

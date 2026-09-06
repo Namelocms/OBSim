@@ -79,6 +79,11 @@ public:
 	*
 	* std::priority_queue cannot remove a scheduled event, so waking an agent early
 	* pushes a newer event and bumps this counter to invalidate the old one.
+	*
+	* BUMP ON RECYCLE, NEVER RESET. An agent id that is reused for a new personality
+	* can still have events from the previous incarnation sitting in the queue. Bumping
+	* leaves them stale so they are discarded on pop; resetting to zero would let one of
+	* them alias a live event and fire against the wrong agent.
 	*/
 	unsigned long long eventGeneration = 0;
 	/* True while this agent has a live event sitting in the queue */

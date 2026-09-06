@@ -85,9 +85,15 @@ void CoreSim::run(SimClock& clock) {
 			this->sweepParticipation(nextCallTime);
 		}
 
-		const EventCall& nextEventCall = this->eventCallQueue.top();
+		// By value, NOT by reference. This call is still read after the pop below, and
+		// pop() swaps the top element to the back before dropping it, so a reference to
+		// top() would name the NEXT event afterwards. Binding a reference here set the
+		// clock to the following event's time, one pacing had not waited for yet, which
+		// ran the live sim ~25% fast at 1x. The back-data pump avoids this by copying
+		// the call time into a local before popping.
+		const EventCall nextEventCall = this->eventCallQueue.top();
 
-		std::shared_ptr<Agent> agent = this->OB.agents[nextEventCall.agentId];
+		std::shared_ptr<Agent> agent = this->OB.getAgent(nextEventCall.agentId);
 
 		// Discard calls left behind when an agent was woken early
 		if (agent == nullptr || nextEventCall.generation != agent->eventGeneration) {
@@ -362,7 +368,7 @@ bool CoreSim::pumpBackDataEvents(double targetMs, SimClock& clock, long long& ev
 		}
 
 		const EventCall& nextEventCall = this->eventCallQueue.top();
-		std::shared_ptr<Agent> agent = this->OB.agents[nextEventCall.agentId];
+		std::shared_ptr<Agent> agent = this->OB.getAgent(nextEventCall.agentId);
 
 		// Discard calls left behind when an agent was woken early
 		if (agent == nullptr || nextEventCall.generation != agent->eventGeneration) {
@@ -410,7 +416,7 @@ void CoreSim::runBackData(SimClock& clock) {
 	this->nextParticipationSweepMs = 0.0;
 
 	// Seeds the queue with whoever is actually trading at the premarket open
-	for (const auto& kv : this->OB.agents) { kv.second->hasPendingEvent = false; }
+	for (const auto& kv : this->OB.agents) { if (kv.second != nullptr) { kv.second->hasPendingEvent = false; } }
 	this->sweepParticipation(0.0);
 
 	long long eventsProcessed = 0;
@@ -544,7 +550,7 @@ void CoreSim::skipToTime(double resumeAtMs, SimClock& clock) {
 	this->OB.wakeQueue.clear(); // wakes are meaningless across a jump, everyone is rescheduled
 
 	// The queue was emptied, so nobody holds a live event any more
-	for (const auto& kv : this->OB.agents) { kv.second->hasPendingEvent = false; }
+	for (const auto& kv : this->OB.agents) { if (kv.second != nullptr) { kv.second->hasPendingEvent = false; } }
 
 	// Only agents taking part in the session we land in get scheduled
 	this->OB.session = MarketCalendar::sessionAt(resumeAtMs);
@@ -575,6 +581,8 @@ void CoreSim::scheduleNextEventCall(std::shared_ptr<Agent> agent, double simTime
 void CoreSim::sweepParticipation(double simTimeMs) {
 	for (const auto& kv : this->OB.agents) {
 		std::shared_ptr<Agent> agent = kv.second;
+		if (agent == nullptr) { continue; }
+
 		bool participating = agent->isParticipating(this->OB.session, simTimeMs);
 
 		// Bankruptcy is a lifecycle state, never overwrite it with a session state
