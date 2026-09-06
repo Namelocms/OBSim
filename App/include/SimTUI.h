@@ -34,6 +34,9 @@ struct Candle {
 struct ResetParams {
     std::string seed = "1";
     std::string backDataDays = "1";
+    /* Index into the selectable live start sessions, cycled rather than typed */
+    int         liveStartSessionIdx = 1;   // 0 PREMARKET, 1 REGULAR, 2 AFTERHOURS
+    std::string minLiquidity = "0";
     std::string agentCount = "100";
     std::string shareFloat = "250000";
     std::string startPrice = "1.00";
@@ -146,6 +149,13 @@ private:
     // ---- Session display helpers ----
     static std::string sessionLabel_(Session session);
     static ftxui::Color sessionColor_(Session session);
+
+    // ---- Reset dialog field layout ----
+    /* Sessions the live sim may open in, in dialog cycle order */
+    static constexpr int LIVE_START_SESSION_COUNT = 3;
+    /* Which dialog row is the session picker, cycled with ←/→ instead of typed */
+    static constexpr int SESSION_FIELD_IDX = 2;
+    static Session sessionFromIdx_(int idx);
 
     // ---- Helper: render one ASCII candle column ----
     ftxui::Element renderCandleColumn_(const Candle& c, double minP, double maxP, int height);

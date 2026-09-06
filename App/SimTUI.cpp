@@ -67,12 +67,16 @@ void SimTUI::run() {
     int speedIdx = 2; // default 1.0x
 
     // ---- Reset dialog field states ----
+    // Null entry marks the session picker, which is cycled rather than typed.
+    // Order must match buildResetDialog_ and SESSION_FIELD_IDX.
     std::vector<std::string*> resetFields = {
-        &resetDraft_.seed, &resetDraft_.backDataDays, &resetDraft_.agentCount,
-        &resetDraft_.shareFloat, &resetDraft_.startPrice
-    };
-    const std::vector<std::string> resetLabels = {
-        "Seed", "Back Data (d)", "Agents", "Share Float", "Start Price"
+        &resetDraft_.seed,
+        &resetDraft_.backDataDays,
+        nullptr,                      // Live Start Session
+        &resetDraft_.minLiquidity,
+        &resetDraft_.agentCount,
+        &resetDraft_.shareFloat,
+        &resetDraft_.startPrice
     };
 
     // ---- Install sim callbacks ----
@@ -145,8 +149,22 @@ void SimTUI::run() {
                 resetFocusIdx_ = (resetFocusIdx_ - 1 + (int)resetFields.size()) % (int)resetFields.size();
                 return true;
             }
+            // Session picker is cycled, not typed
+            if (resetFocusIdx_ == SESSION_FIELD_IDX) {
+                if (event == Event::ArrowRight || event == Event::Character(' ')) {
+                    resetDraft_.liveStartSessionIdx =
+                        (resetDraft_.liveStartSessionIdx + 1) % LIVE_START_SESSION_COUNT;
+                    return true;
+                }
+                if (event == Event::ArrowLeft) {
+                    resetDraft_.liveStartSessionIdx =
+                        (resetDraft_.liveStartSessionIdx - 1 + LIVE_START_SESSION_COUNT) % LIVE_START_SESSION_COUNT;
+                    return true;
+                }
+            }
             // Backspace
             if (event == Event::Backspace) {
+                if (resetFields[resetFocusIdx_] == nullptr) { return true; }
                 auto& f = *resetFields[resetFocusIdx_];
                 if (!f.empty()) f.pop_back();
                 return true;
@@ -165,6 +183,8 @@ void SimTUI::run() {
                     };
                 unsigned newSeed = toUInt(resetDraft_.seed, 1);
                 unsigned newBackDataDays = toUInt(resetDraft_.backDataDays, 1);
+                Session  newLiveStart = sessionFromIdx_(resetDraft_.liveStartSessionIdx);
+                unsigned newMinLiquidity = toUInt(resetDraft_.minLiquidity, 0);
                 unsigned short newAgentCount = (unsigned short)toUInt(resetDraft_.agentCount, 100);
                 unsigned newShareFloat = toUInt(resetDraft_.shareFloat, 250000);
                 double   newStartPrice = toDbl(resetDraft_.startPrice, 1.0);
@@ -180,8 +200,7 @@ void SimTUI::run() {
                 std::priority_queue<EventCall, std::vector<EventCall>, CompareEventCalls> empty;
                 std::swap(sim_.eventCallQueue, empty);
 
-                // Live start session and min liquidity get their own dialog fields in a later step
-                sim_.setParameters(newSeed, newBackDataDays, Session::REGULAR, 0,
+                sim_.setParameters(newSeed, newBackDataDays, newLiveStart, newMinLiquidity,
                     newAgentCount, newShareFloat, newStartPrice);
                 simDone_.store(false);
 
@@ -205,6 +224,7 @@ void SimTUI::run() {
             }
             // Character input
             if (event.is_character()) {
+                if (resetFields[resetFocusIdx_] == nullptr) { return true; }
                 *resetFields[resetFocusIdx_] += event.character();
                 return true;
             }
@@ -765,13 +785,22 @@ Element SimTUI::buildControls_() {
 // ============================================================
 
 Element SimTUI::buildResetDialog_() {
+    // Order must match resetFields in run() and SESSION_FIELD_IDX
     const std::vector<std::string> labels = {
-        "Seed", "Back Data (days)", "Agent Count", "Share Float", "Start Price"
+        "Seed", "Back Data (days)", "Live Start", "Min Liquidity",
+        "Agent Count", "Share Float", "Start Price"
     };
     std::vector<std::string*> fields = {
-        &resetDraft_.seed, &resetDraft_.backDataDays, &resetDraft_.agentCount,
-        &resetDraft_.shareFloat, &resetDraft_.startPrice
+        &resetDraft_.seed,
+        &resetDraft_.backDataDays,
+        nullptr,                      // session picker
+        &resetDraft_.minLiquidity,
+        &resetDraft_.agentCount,
+        &resetDraft_.shareFloat,
+        &resetDraft_.startPrice
     };
+
+    Session pickedSession = sessionFromIdx_(resetDraft_.liveStartSessionIdx);
 
     std::vector<Element> rows;
     rows.push_back(text("  RESET SIMULATION  ") | bold | color(Color::Cyan) | center);
@@ -779,23 +808,57 @@ Element SimTUI::buildResetDialog_() {
 
     for (int i = 0; i < (int)labels.size(); ++i) {
         bool focused = (i == resetFocusIdx_);
-        std::string display = *fields[i] + (focused ? "▌" : " ");
+
+        Element value;
+        if (i == SESSION_FIELD_IDX) {
+            std::string display = "< " + sessionLabel_(pickedSession) + " >";
+            value = text(display) | bold | color(focused ? sessionColor_(pickedSession) : Color::GrayDark);
+        }
+        else {
+            std::string display = *fields[i] + (focused ? "▌" : " ");
+            value = text(display) | bold | color(focused ? Color::Cyan : Color::GrayDark);
+        }
 
         rows.push_back(hbox({
             text(labels[i] + ": ")
                 | color(focused ? Color::White : Color::GrayLight)
-                | size(WIDTH, EQUAL, 14),
-            text(display)
-                | color(focused ? Color::Cyan : Color::GrayDark)
-                | bold,
+                | size(WIDTH, EQUAL, 17),
+            value,
             }) | (focused ? inverted : nothing));
     }
 
+    // Derived back-data span, computed through Config so the day -> minute
+    // conversion stays in exactly one place
+    auto toUIntSafe = [](const std::string& s, unsigned def) -> unsigned {
+        try { return (unsigned)std::stoul(s); }
+        catch (...) { return def; }
+        };
+    Config preview;
+    preview.backDataDays = toUIntSafe(resetDraft_.backDataDays, 1);
+    preview.liveStartSession = pickedSession;
+
+    double totalMin = MarketCalendar::msToMinutes(preview.backDataDurationMs());
+    double activeMin = preview.backDataActiveMinutes();
+
+    rows.push_back(separator());
+    if (totalMin <= 0.0) {
+        rows.push_back(text("  no back data, opens immediately") | color(Color::Yellow) | center);
+    }
+    else {
+        rows.push_back(hbox({
+            text("  Span: ") | color(Color::GrayDark),
+            text(fmtDouble(activeMin, 0) + " active min") | color(Color::Green) | bold,
+            text("  (" + fmtDouble(totalMin, 0) + " total)") | color(Color::GrayDark),
+            }));
+    }
+    rows.push_back(text("  start price is safest at 2 decimals") | color(Color::GrayDark));
+
     rows.push_back(separator());
     rows.push_back(hbox({
-        text("[Tab/↑↓]") | color(Color::Yellow) | bold, text(" Navigate  "),
-        text("[Enter]") | color(Color::Green) | bold, text(" Confirm  "),
-        text("[Esc]") | color(Color::Red) | bold, text(" Cancel"),
+        text("[Tab/↑↓]") | color(Color::Yellow) | bold, text(" Move  "),
+        text("[←→]") | color(Color::Yellow) | bold, text(" Session  "),
+        text("[Enter]") | color(Color::Green) | bold, text(" Go  "),
+        text("[Esc]") | color(Color::Red) | bold, text(" Back"),
         }) | center);
 
     return vbox({
@@ -803,12 +866,20 @@ Element SimTUI::buildResetDialog_() {
         hbox({
             filler(),
             window(text(" ⚙  Reset Parameters "),
-                vbox(std::move(rows)) | size(WIDTH, EQUAL, 44)
+                vbox(std::move(rows)) | size(WIDTH, EQUAL, 56)
             ),
             filler(),
         }),
         filler(),
         });
+}
+
+Session SimTUI::sessionFromIdx_(int idx) {
+    switch (idx) {
+    case 0:  return Session::PREMARKET;
+    case 2:  return Session::AFTERHOURS;
+    default: return Session::REGULAR;
+    }
 }
 
 // ============================================================
