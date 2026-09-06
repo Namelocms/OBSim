@@ -57,6 +57,21 @@ inline constexpr double EXT_PARTICIPATION_RETAIL_NOISE = 0.03;
 /* Share of its base rate retail retains at the deepest point of the overnight */
 inline constexpr double RETAIL_EXTENDED_FLOOR_FACTOR = 0.20;
 
+/* ---- Sentiment averaging ----
+*
+* Agents act on irregular schedules, from sub-millisecond to over an hour apart, so a
+* plain per-action average would weight a fast agent's recent mood far more heavily
+* than a slow one's. The EWMA is therefore driven by ELAPSED SIM TIME rather than by
+* action count: every agent's average covers the same real window regardless of how
+* often it happens to act.
+*
+* Half-life is how long it takes the average to cover half the distance to a new
+* level. tau is the matching time constant, tau = halfLife / ln 2.
+*/
+inline constexpr double SENTIMENT_EWMA_HALFLIFE_MINUTES = 20.0;
+inline constexpr double SENTIMENT_EWMA_TAU_MS =
+	(SENTIMENT_EWMA_HALFLIFE_MINUTES * 60'000.0) / 0.693147180559945309417;
+
 class Agent : public std::enable_shared_from_this<Agent> {
 public:
 	/* Agent's unique ID */
@@ -98,6 +113,25 @@ public:
 	double cash;
 	/* Agent's market sentiment */
 	double sentiment;
+	/* Time-weighted average of this agent's sentiment, half-life SENTIMENT_EWMA_HALFLIFE_MINUTES
+	*
+	* Seeded to the agent's opening sentiment rather than to zero, so a freshly created
+	* agent reads as holding the conviction it was born with instead of a neutral prior
+	* it never had.
+	*/
+	double sentimentEwma = 0.0;
+	/* Which way this agent's book leans: +1 long biased, -1 short biased
+	*
+	* Sentiment on its own cannot say whether the market is going an agent's way, because
+	* that depends on which way the agent is positioned. Falling sentiment is adverse to a
+	* long and favourable to a short. Every stance relative calculation therefore goes
+	* through this rather than testing the sign of sentiment directly, so adding a short
+	* side agent later is a bias flip and not a rewrite.
+	*
+	* Nothing sets this to -1 yet. It is deliberately a double rather than a bool or an
+	* enum so a partially hedged agent can later sit somewhere between the two.
+	*/
+	double directionalBias = 1.0;
 	/* Agent's speed of sentiment mean reversion to OB.marketNeutralSentiment, higher = faster */
 	double sentimentTheta;
 	/* Agent's sentiment volatility, higher = larger swings */
@@ -154,8 +188,18 @@ public:
 // ---- Action Operations ----
 	/* Execute a chosen action */
 	void actRandom();
-	/* Update the agent's sentiment value using the Ornstein-Uhlenbeck (OU) Process */
+	/* Update the agent's sentiment value using the Ornstein-Uhlenbeck (OU) Process
+	*
+	* Also advances sentimentEwma over the same elapsed interval.
+	*/
 	void updateSentiment();
+	/* How far the market has moved AGAINST this agent's stance lately, in [0, 1]
+	*
+	* Zero while the averaged sentiment is aligned with directionalBias or neutral, rising
+	* to one when it is fully opposed. Deliberately one sided: this measures adversity, not
+	* conviction, so a favourable market returns zero rather than a negative number.
+	*/
+	double adversity() const;
 	/* Convert the raw sentiment value into a usable OrderAction enum using the SoftMax function */
 	OrderAction sentimentToAction();
 	/* Choose a random OrderAction given the agent's current portfolio and sentiment */

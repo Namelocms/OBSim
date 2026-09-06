@@ -19,6 +19,12 @@ Agent::Agent(std::string id, double reactionTimeFloor, double cash, AgentStatus 
 	participationThreshold(randomDouble(0.0, 1.0)) {
 
 	this->sentimentActions = { OrderAction::ASK, OrderAction::HOLD, OrderAction::BID };
+
+	// Seed the average with the opening sentiment. Assigned here rather than in the
+	// initialiser list because members initialise in declaration order, not list order,
+	// so reading sentiment there would depend on where it happens to be declared.
+	// Consumes no RNG, the value is already drawn.
+	this->sentimentEwma = this->sentiment;
 }
 
 // ---- Cash Operations ----
@@ -171,6 +177,29 @@ void Agent::updateSentiment() {
 
 	double newSentiment = mu + (s0 - mu) * decay + sigma * noiseScaling * n;
 	this->sentiment = newSentiment;
+
+	// Advance the running average over the same interval the OU step just covered.
+	// alpha is derived from elapsed sim time, not taken as a fixed weight, so agents on
+	// wildly different schedules end up with averages over the same real window: an agent
+	// acting every second and one acting every ten minutes both cover half a step change
+	// in SENTIMENT_EWMA_HALFLIFE_MINUTES.
+	//
+	// This is the standard irregular interval EWMA, which treats the new reading as
+	// representative of the interval that just ended. It therefore leads a true time
+	// average slightly, which is the wanted behaviour here since the point is to measure
+	// recent conviction rather than to integrate the past exactly.
+	double alpha = 1.0 - std::exp(-r / SENTIMENT_EWMA_TAU_MS);
+	this->sentimentEwma += alpha * (this->sentiment - this->sentimentEwma);
+}
+double Agent::adversity() const {
+	// Positive when the averaged sentiment agrees with the way this agent is positioned
+	double conviction = this->directionalBias * this->sentimentEwma;
+
+	// Only the adverse direction counts, and only up to fully opposed
+	double adverse = -conviction;
+	if (adverse < 0.0) { return 0.0; }
+	if (adverse > 1.0) { return 1.0; }
+	return adverse;
 }
 OrderAction Agent::sentimentToAction() {
 	double boundSentiment = std::max(-1.0, std::min(1.0, this->sentiment));
