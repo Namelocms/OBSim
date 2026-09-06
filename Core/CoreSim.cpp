@@ -262,6 +262,25 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 		// add holding(s)
 	}
 }
+void CoreSim::reportBackDataProgress(const SimClock& clock, long long eventsProcessed) {
+	if (!this->onBackDataProgress) { return; }
+
+	BackDataProgress p;
+	p.simTimeMs = clock.simTimeMs;
+	p.session = this->OB.session;
+	p.dayIndex = MarketCalendar::dayIndex(clock.simTimeMs);
+	p.activeMinutes = MarketCalendar::activeMinutesElapsed(clock.simTimeMs);
+	p.totalMinutes = MarketCalendar::msToMinutes(clock.simTimeMs);
+	p.targetMinutes = MarketCalendar::msToMinutes(this->backDataTargetMs);
+	p.events = eventsProcessed;
+	p.ticks = (long long)this->OB.tickHistory.size();
+	p.extraDays = this->backDataExtraDays;
+
+	double pct = (this->backDataTargetMs > 0.0) ? (clock.simTimeMs / this->backDataTargetMs) * 100.0 : 100.0;
+	p.percent = (pct < 0.0) ? 0.0 : (pct > 100.0 ? 100.0 : pct);
+
+	this->onBackDataProgress(p);
+}
 bool CoreSim::pumpBackDataEvents(double targetMs, SimClock& clock, long long& eventsProcessed,
 	const std::chrono::steady_clock::time_point& wallStart) {
 
@@ -308,7 +327,7 @@ bool CoreSim::pumpBackDataEvents(double targetMs, SimClock& clock, long long& ev
 			double wallSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - wallStart).count();
 			if (wallSeconds >= BACK_DATA_MAX_WALL_SECONDS) { return false; }
 
-			if (this->onTick) { this->onTick(); }
+			this->reportBackDataProgress(clock, eventsProcessed);
 		}
 	}
 
@@ -322,11 +341,15 @@ void CoreSim::runBackData(SimClock& clock) {
 	this->OB.session = MarketCalendar::sessionAt(0.0);
 	this->nextBoundaryMs = MarketCalendar::nextBoundaryMs(0.0);
 	this->backDataAborted = false;
+	this->backDataExtraDays = 0;
+	this->backDataTargetMs = liveStartMs;
+	this->backDataRunning.store(true);
 
 	for (const auto& kv : this->OB.agents) { this->scheduleNextEventCall(kv.second, 0.0); }
 
 	long long eventsProcessed = 0;
 	auto wallStart = std::chrono::steady_clock::now();
+	this->reportBackDataProgress(clock, eventsProcessed);
 
 	// ---- Main back-data span ----
 	bool completed = true;
@@ -345,6 +368,8 @@ void CoreSim::runBackData(SimClock& clock) {
 
 			handoffMs += MarketCalendar::minutesToMs(MarketCalendar::TOTAL_MINUTES_PER_DAY);
 			++extraDays;
+			this->backDataExtraDays = extraDays;
+			this->backDataTargetMs = handoffMs;
 			completed = this->pumpBackDataEvents(handoffMs, clock, eventsProcessed, wallStart);
 			if (!completed) { break; }
 		}
@@ -359,6 +384,7 @@ void CoreSim::runBackData(SimClock& clock) {
 
 	if (!completed) {
 		this->backDataAborted = true;
+		this->backDataRunning.store(false);
 		if (this->onLog) {
 			this->onLog({ LogEntry::Kind::HOLD, clock.simTimeMs, "BACK DATA ABORTED, cap reached or cancelled" });
 		}
@@ -375,6 +401,9 @@ void CoreSim::runBackData(SimClock& clock) {
 	this->skipToTime(handoffMs, clock);
 	this->OB.session = MarketCalendar::sessionAt(handoffMs);
 	this->nextBoundaryMs = MarketCalendar::nextBoundaryMs(handoffMs);
+
+	this->reportBackDataProgress(clock, eventsProcessed);
+	this->backDataRunning.store(false);
 
 	if (this->onLog) {
 		EnumStrings es;

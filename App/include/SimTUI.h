@@ -13,7 +13,8 @@
 #include "ftxui/component/screen_interactive.hpp"
 #include "ftxui/dom/elements.hpp"
 
-class CoreSim;
+#include "CoreSim.h"
+
 class SimClock;
 struct Snapshot;
 struct LogEntry;
@@ -72,6 +73,10 @@ struct TUIState {
     int      totalOrders = 0;
     int      totalAgents = 0;
     unsigned shareFloat = 0;
+    Session  session = Session::PREMARKET;
+
+    // Back-data progress (valid while the run is in flight)
+    BackDataProgress backData;
 
     // Log ring buffer
     std::deque<std::string> logLines;          // newest last, cap 200
@@ -119,6 +124,7 @@ private:
     // ---- Callbacks installed on CoreSim ----
     void onTick_();
     void onLog_(LogEntry entry);
+    void onBackDataProgress_(BackDataProgress progress);
 
     // ---- State Refresh (called from onTick_) ----
     void refreshState_();
@@ -135,6 +141,11 @@ private:
     ftxui::Element buildControls_();
     int            resetFocusIdx_ = 0;  // which field is active in reset dialog
     ftxui::Element buildResetDialog_();
+    ftxui::Element buildBackDataOverlay_();
+
+    // ---- Session display helpers ----
+    static std::string sessionLabel_(Session session);
+    static ftxui::Color sessionColor_(Session session);
 
     // ---- Helper: render one ASCII candle column ----
     ftxui::Element renderCandleColumn_(const Candle& c, double minP, double maxP, int height);

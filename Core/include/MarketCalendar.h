@@ -65,6 +65,16 @@ inline double minutesIntoDay(double simTimeMs) {
 inline double dayStartMs(int dayIndex) {
 	return minutesToMs(dayIndex * TOTAL_MINUTES_PER_DAY);
 }
+/* Get the tradeable minutes elapsed since t = 0, overnight spans excluded
+*
+* Total elapsed minutes include overnight, this counts only session time. For a
+* 1-day back data run ending at the regular open: 1770 total, 1290 active.
+*/
+inline double activeMinutesElapsed(double simTimeMs) {
+	double into = minutesIntoDay(simTimeMs);
+	double activeIntoDay = (into < ACTIVE_MINUTES_PER_DAY) ? into : ACTIVE_MINUTES_PER_DAY;
+	return (dayIndex(simTimeMs) * ACTIVE_MINUTES_PER_DAY) + activeIntoDay;
+}
 
 // ---- Session Operations ----
 

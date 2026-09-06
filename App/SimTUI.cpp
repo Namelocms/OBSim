@@ -78,6 +78,10 @@ void SimTUI::run() {
     // ---- Install sim callbacks ----
     sim_.onTick = [&]() { this->onTick_(); screen.PostEvent(Event::Custom); };
     sim_.onLog = [&](LogEntry e) { this->onLog_(e); };
+    sim_.onBackDataProgress = [&](BackDataProgress p) {
+        this->onBackDataProgress_(p);
+        screen.PostEvent(Event::Custom);
+        };
 
     // ---- Start sim thread ----
     simThread_ = std::thread([&]() {
@@ -91,6 +95,10 @@ void SimTUI::run() {
         // Build dashboard layout
         if (showResetDialog_) {
             return buildResetDialog_();
+        }
+        // Headless back data is in flight, the dashboard has nothing to show yet
+        if (sim_.backDataRunning.load()) {
+            return buildBackDataOverlay_();
         }
 
         auto header = buildHeader_();
@@ -203,6 +211,46 @@ void SimTUI::run() {
             return false;
         }
 
+        // ---- Back data is building, only quit and cancel are meaningful ----
+        if (sim_.backDataRunning.load()) {
+            if (event == Event::Character('q') || event == Event::Character('Q')) {
+                sim_.cancelRequested.store(true);
+                sim_.isRunning = false;
+                screen.ExitLoopClosure()();
+                return true;
+            }
+            if (event == Event::Escape) {
+                // Ask the run to abort, then wait for the sim thread to unwind.
+                // No state_ lock is held here, the sim thread still needs it to
+                // deliver its final progress callback.
+                sim_.cancelRequested.store(true);
+                sim_.isRunning = false;
+                clock_.resume(); // in case the thread is parked
+                if (simThread_.joinable()) simThread_.join();
+
+                std::priority_queue<EventCall, std::vector<EventCall>, CompareEventCalls> empty;
+                std::swap(sim_.eventCallQueue, empty);
+                simDone_.store(false);
+
+                {
+                    std::lock_guard<std::mutex> lk(state_.mtx);
+                    state_.priceHistory.clear();
+                    state_.candles.clear();
+                    state_.logLines.clear();
+                    state_.bids.clear();
+                    state_.asks.clear();
+                    state_.agents.clear();
+                    state_.backData = BackDataProgress{};
+                }
+
+                // Back to setup with whatever the user last entered still populated
+                showResetDialog_ = true;
+                resetFocusIdx_ = 0;
+                return true;
+            }
+            return true; // swallow everything else while the run is headless
+        }
+
         // Main keyboard handling
         if (event == Event::Character(',') || event == Event::Character('<')) {
             sim_.OB.marketNeutralSentiment -= 0.01;
@@ -311,8 +359,36 @@ void SimTUI::onLog_(LogEntry entry) {
 //  State Refresh
 // ============================================================
 
+void SimTUI::onBackDataProgress_(BackDataProgress progress) {
+    std::lock_guard<std::mutex> lk(state_.mtx);
+    state_.backData = progress;
+    state_.session = progress.session;
+    state_.currentPrice = sim_.OB.currentPrice;
+    state_.totalTicks = (int)progress.ticks;
+}
+
+std::string SimTUI::sessionLabel_(Session session) {
+    switch (session) {
+    case Session::PREMARKET:  return "PREMARKET";
+    case Session::REGULAR:    return "REGULAR";
+    case Session::AFTERHOURS: return "AFTERHOURS";
+    case Session::OVERNIGHT:  return "OVERNIGHT";
+    default:                  return "CLOSED";
+    }
+}
+Color SimTUI::sessionColor_(Session session) {
+    switch (session) {
+    case Session::PREMARKET:  return Color::CyanLight;
+    case Session::REGULAR:    return Color::GreenLight;
+    case Session::AFTERHOURS: return Color::Orange1;
+    case Session::OVERNIGHT:  return Color::BlueLight;
+    default:                  return Color::GrayDark;
+    }
+}
+
 void SimTUI::refreshState_() {
     std::lock_guard<std::mutex> lk(state_.mtx);
+    state_.session = sim_.OB.session;
 
     // Price
     double p = sim_.OB.currentPrice;
@@ -423,6 +499,8 @@ Element SimTUI::buildHeader_() {
         text(std::to_string(state_.shareFloat)) | color(Color::White),
         text("  SimTime: ") | color(Color::GrayDark),
         text(fmtMs(state_.simTimeMs)) | color(Color::White),
+        text("  Session: ") | color(Color::GrayDark),
+        text(sessionLabel_(state_.session)) | bold | color(sessionColor_(state_.session)),
         text("  Market Sentiment: ") | color(Color::GrayDark),
         text(std::to_string(state_.marketBaseSentiment)) | color(Color::White),
         filler(),
@@ -727,6 +805,77 @@ Element SimTUI::buildResetDialog_() {
             window(text(" ⚙  Reset Parameters "),
                 vbox(std::move(rows)) | size(WIDTH, EQUAL, 44)
             ),
+            filler(),
+        }),
+        filler(),
+        });
+}
+
+// ============================================================
+//  Back Data Progress Overlay
+// ============================================================
+
+Element SimTUI::buildBackDataOverlay_() {
+    std::lock_guard<std::mutex> lk(state_.mtx);
+    const BackDataProgress& p = state_.backData;
+
+    constexpr int BAR_WIDTH = 40;
+    int filled = (int)((p.percent / 100.0) * BAR_WIDTH);
+    if (filled < 0) filled = 0;
+    if (filled > BAR_WIDTH) filled = BAR_WIDTH;
+
+    std::string bar = std::string(filled, '#') + std::string(BAR_WIDTH - filled, '.');
+
+    // Time of day within the simulated day, t = 0 is 04:00
+    double intoDay = p.totalMinutes - (double)p.dayIndex * 1440.0;
+    int hours = (int)((intoDay + 240.0) / 60.0) % 24;   // shift so 0 -> 04:00
+    int mins = (int)intoDay % 60;
+    char clockBuf[16];
+    std::snprintf(clockBuf, sizeof(clockBuf), "%02d:%02d", hours, mins);
+
+    auto row = [](const std::string& label, Element value) {
+        return hbox({
+            text("  " + label) | color(Color::GrayDark) | size(WIDTH, EQUAL, 18),
+            value,
+            });
+        };
+
+    std::vector<Element> rows;
+    rows.push_back(text("  BUILDING BACK DATA  ") | bold | color(Color::Cyan) | center);
+    rows.push_back(separator());
+
+    rows.push_back(hbox({
+        text("  ["), text(bar) | color(Color::Green), text("] "),
+        text(fmtDouble(p.percent, 1) + "%") | bold | color(Color::White),
+        }));
+    rows.push_back(separator());
+
+    rows.push_back(row("Session", text(sessionLabel_(p.session)) | bold | color(sessionColor_(p.session))));
+    rows.push_back(row("Day", text(std::to_string(p.dayIndex + 1)) | color(Color::White)));
+    rows.push_back(row("Market clock", text(std::string(clockBuf)) | color(Color::White)));
+    rows.push_back(row("Active minutes", text(fmtDouble(p.activeMinutes, 0)) | color(Color::White)));
+    rows.push_back(row("Total minutes",
+        text(fmtDouble(p.totalMinutes, 0) + " / " + fmtDouble(p.targetMinutes, 0)) | color(Color::White)));
+    rows.push_back(row("Trades", text(std::to_string(p.ticks)) | color(Color::White)));
+    rows.push_back(row("Events", text(std::to_string(p.events)) | color(Color::White)));
+    rows.push_back(row("Price", text("$" + fmtDouble(state_.currentPrice, 4)) | color(Color::White)));
+
+    if (p.extraDays > 0) {
+        rows.push_back(separator());
+        rows.push_back(text("  extending " + std::to_string(p.extraDays) +
+            " day(s) for minimum liquidity") | color(Color::Yellow) | center);
+    }
+
+    rows.push_back(separator());
+    rows.push_back(hbox({
+        text("[Esc]") | color(Color::Red) | bold, text(" Cancel and return to setup"),
+        }) | center);
+
+    return vbox({
+        filler(),
+        hbox({
+            filler(),
+            window(text(" ⏳  Back Data "), vbox(std::move(rows)) | size(WIDTH, EQUAL, 56)),
             filler(),
         }),
         filler(),

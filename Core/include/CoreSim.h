@@ -75,6 +75,20 @@ inline constexpr int BACK_DATA_MAX_EXTRA_DAYS = 3;
 /* How often the back-data loop checks caps, cancellation, and reports progress */
 inline constexpr long long BACK_DATA_CHECK_INTERVAL = 4096;
 
+/* Snapshot of an in-progress back-data run, pushed to the UI on an interval */
+struct BackDataProgress {
+    double percent = 0.0;        // 0-100 against the current handoff target
+    Session session = Session::PREMARKET;
+    int dayIndex = 0;
+    double simTimeMs = 0.0;
+    double activeMinutes = 0.0;  // tradeable minutes elapsed, overnight excluded
+    double totalMinutes = 0.0;   // clock minutes elapsed, overnight included
+    double targetMinutes = 0.0;  // total clock minutes to the handoff
+    long long events = 0;
+    long long ticks = 0;
+    int extraDays = 0;           // extra days added chasing minLiquidity
+};
+
 struct EventCall {
     double callTime;
     std::string agentId;
@@ -98,6 +112,10 @@ public:
     MatchingEngine ME = MatchingEngine(this->OB);
     std::function<void(LogEntry)> onLog;
     std::function<void()> onTick;
+    /* Fired on an interval during the back-data run so the UI can show progress */
+    std::function<void(BackDataProgress)> onBackDataProgress;
+    /* True while the headless back-data run is in progress */
+    std::atomic<bool> backDataRunning{ false };
     std::priority_queue<EventCall, std::vector<EventCall>, CompareEventCalls> eventCallQueue;
     /* Sim time of the next session change, drives boundary processing in both loops */
     double nextBoundaryMs = 0.0;
@@ -161,6 +179,13 @@ private:
     */
     bool pumpBackDataEvents(double targetMs, SimClock& clock, long long& eventsProcessed,
         const std::chrono::steady_clock::time_point& wallStart);
+    /* Push a progress snapshot to the UI */
+    void reportBackDataProgress(const SimClock& clock, long long eventsProcessed);
+
+    /* Total clock time to the handoff, denominator for the progress percent */
+    double backDataTargetMs = 0.0;
+    /* Extra days added chasing minLiquidity, surfaced in progress */
+    int backDataExtraDays = 0;
 
     Config parameters;
 };
