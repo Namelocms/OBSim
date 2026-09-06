@@ -113,11 +113,14 @@ void Agent::removeActiveOrder(std::shared_ptr<Order> order) {
 // ---- Action Operations ----
 
 void Agent::actRandom() {
+	++this->actionCount;
+
+	// An agent on its way out has no opinion left to act on, only a position to close
+	if (this->status == AgentStatus::LEAVING) { this->actFlatten(); return; }
+
 	OrderAction action = this->getRandomAction();
 	OrderType orderType = randomInt(0, 1) ? OrderType::MARKET : OrderType::LIMIT;
 	std::shared_ptr<Order> order;
-
-	++this->actionCount;
 
 	switch (action) {
 	case OrderAction::BID:
@@ -164,6 +167,59 @@ void Agent::actRandom() {
 		this->hold();
 		break;
 	}
+}
+void Agent::actFlatten() {
+	// Keep the running average moving even while unwinding, so a slot's final adversity is
+	// still meaningful to anything measuring why it left
+	this->updateSentiment();
+
+	OrderAction side = this->flattenSide();
+
+	// Replace the previous attempt rather than posting beside it. A partially filled unwind
+	// order leaves a resting remainder, and adding another would split the position across
+	// stale quotes so the slot could never come clean. Collect first: cancelOrder erases
+	// from the very map being iterated.
+	const auto& resting = (side == OrderAction::BID) ? this->activeBids : this->activeAsks;
+	std::vector<std::shared_ptr<Order>> stale;
+	stale.reserve(resting.size());
+	for (const auto& kv : resting) { stale.push_back(kv.second); }
+	for (const std::shared_ptr<Order>& o : stale) { this->OB.cancelOrder(o, shared_from_this()); }
+
+	std::shared_ptr<Order> order;
+
+	// Always crosses, always for the whole remaining position. Marketable limits work in
+	// every session, so unwinding does not stall outside REGULAR the way a market order would.
+	if (side == OrderAction::ASK) {
+		if (this->getTotalHoldings() < 1) { return; }
+		order = this->makeLimitAsk(true, true);
+		if (order == nullptr) { return; }
+		this->ME.matchLimitAsk(order);
+	}
+	else {
+		order = this->makeLimitBid(true, true);
+		if (order == nullptr) { return; }
+		this->ME.matchLimitBid(order);
+	}
+}
+OrderAction Agent::entrySide() const {
+	return (this->directionalBias >= 0.0) ? OrderAction::BID : OrderAction::ASK;
+}
+OrderAction Agent::flattenSide() const {
+	return (this->directionalBias >= 0.0) ? OrderAction::ASK : OrderAction::BID;
+}
+bool Agent::shouldAct(Session session, double simTimeMs) const {
+	// A pooled slot is not an agent right now, it is an empty seat
+	if (this->status == AgentStatus::POOLED) { return false; }
+
+	// Gating is suspended while leaving. Without this an agent that went dormant off hours
+	// could never work its position off, and its slot could never be reused.
+	if (this->status == AgentStatus::LEAVING) { return true; }
+
+	return this->isParticipating(session, simTimeMs);
+}
+bool Agent::isStranded(double nowMs) const {
+	if (this->status != AgentStatus::LEAVING || this->leavingSinceMs <= 0.0) { return false; }
+	return (nowMs - this->leavingSinceMs) >= (TRANSIENT_LEAVING_GRACE_MINUTES * 60'000.0);
 }
 void Agent::updateSentiment() {
 	double s0 = this->sentiment;
@@ -290,9 +346,10 @@ std::shared_ptr<Order> Agent::makeMarketBid() {
 
 	return order;
 }
-std::shared_ptr<Order> Agent::makeLimitBid() {
+std::shared_ptr<Order> Agent::makeLimitBid(bool forceAggressive, bool fullSize) {
 	// Crossing orders are priced off the opposite touch, passive ones off the last trade
-	double chosenPrice = this->rollAggressive() ? this->getMarketablePrice(OrderAction::BID) : -1.0;
+	double chosenPrice = (forceAggressive || this->rollAggressive())
+		? this->getMarketablePrice(OrderAction::BID) : -1.0;
 	if (chosenPrice <= 0.0) { chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::BID); }
 
 	int maxPurchasable = int(this->cash / chosenPrice);
@@ -305,7 +362,7 @@ std::shared_ptr<Order> Agent::makeLimitBid() {
 	}
 	if (maxPurchasable < 1) { return nullptr; }
 
-	int chosenVol = randomInt(1, maxPurchasable);
+	int chosenVol = fullSize ? maxPurchasable : randomInt(1, maxPurchasable);
 	double totalValue = roundTo(chosenPrice * chosenVol);
 
 	std::shared_ptr<Order> order = std::make_shared<Order>(
@@ -345,16 +402,18 @@ std::shared_ptr<Order> Agent::makeMarketAsk() {
 
 	return order;
 }
-std::shared_ptr<Order> Agent::makeLimitAsk() {
+std::shared_ptr<Order> Agent::makeLimitAsk(bool forceAggressive, bool fullSize) {
 	// Crossing orders are priced off the opposite touch, passive ones off the last trade
-	double chosenPrice = this->rollAggressive() ? this->getMarketablePrice(OrderAction::ASK) : -1.0;
+	double chosenPrice = (forceAggressive || this->rollAggressive())
+		? this->getMarketablePrice(OrderAction::ASK) : -1.0;
 	if (chosenPrice <= 0.0) { chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::ASK); }
 
 	int chosenVol = 1;
 
 	int totalHoldings = this->getTotalHoldings();
 	if (totalHoldings < 1) { return nullptr; }
-	if (totalHoldings > 1) { chosenVol = randomInt(1, totalHoldings); }
+	if (fullSize) { chosenVol = totalHoldings; }
+	else if (totalHoldings > 1) { chosenVol = randomInt(1, totalHoldings); }
 
 	std::vector<Holding> reservedHoldings = this->removeHoldings(chosenVol);
 

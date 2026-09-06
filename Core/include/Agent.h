@@ -170,6 +170,37 @@ inline constexpr double TRANSIENT_SESSION_FACTOR_REGULAR = 1.00;
 inline constexpr double TRANSIENT_SESSION_FACTOR_AFTERHOURS = 0.08;
 inline constexpr double TRANSIENT_SESSION_FACTOR_OVERNIGHT = 0.01;
 
+/* ---- Departure ----
+*
+* The hazard is evaluated over ELAPSED SIM TIME, not per action, so tenure is independent
+* of how fast an agent happens to act:
+*
+*     tauEff  = (halfLife / ln 2) / (1 + TRANSIENT_ADVERSITY_GAIN * adversity)
+*     pDepart = 1 - exp(-dt / tauEff)
+*
+* Asymmetric on purpose. Adversity shortens tenure; a favourable market does not extend it.
+*/
+inline constexpr double TRANSIENT_MAX_TENURE_MINUTES = 240.0;
+/* Full adversity divides the time constant by (1 + gain), so 3.0 is a 4x shorter stay */
+inline constexpr double TRANSIENT_ADVERSITY_GAIN = 3.0;
+
+/* ---- Unwinding ----
+*
+* A leaving agent flattens before its slot can be reused, because an Order carries only its
+* agent's id: a slot rerolled while it still owns orders would hand their fills to the new
+* occupant. Participation gating is suspended while leaving, or an agent that went dormant
+* off hours could never work its position off.
+*/
+inline constexpr double TRANSIENT_LEAVING_GRACE_MINUTES = 30.0;
+/* Cadence a stranded agent falls back to when it could not flatten inside the grace window
+*
+* It is NOT retired holding its shares. It stays in the market on a long horizon, still
+* working the position off, so the float keeps circulating. The stretch is also cost
+* control: an agent with a 2 second floor stuck holding shares would otherwise generate
+* events at that cadence indefinitely.
+*/
+inline constexpr double TRANSIENT_STRANDED_REACTION_MINUTES = 120.0;
+
 class Agent : public std::enable_shared_from_this<Agent> {
 public:
 	/* Agent's unique ID */
@@ -308,6 +339,25 @@ public:
 // ---- Action Operations ----
 	/* Execute a chosen action */
 	void actRandom();
+	/* Work this agent's position off, ignoring sentiment entirely
+	*
+	* Used while LEAVING. Trades only the flatten side and always crosses, so unwinding
+	* does not stall outside REGULAR where market orders are unavailable.
+	*/
+	void actFlatten();
+	/* Side this agent trades to open a position: BID when long biased, ASK when short */
+	OrderAction entrySide() const;
+	/* Side this agent trades to close one. Derived from directionalBias, never hardcoded,
+	*  so a short biased agent flattens by buying without any further change. */
+	OrderAction flattenSide() const;
+	/* Should this agent act if its event fires now?
+	*
+	* Session gating for a normal agent, but an agent on its way out always acts until it
+	* is flat, and a pooled slot never acts at all.
+	*/
+	bool shouldAct(Session session, double simTimeMs) const;
+	/* Is this leaving agent past its unwind window and still holding? */
+	bool isStranded(double nowMs) const;
 	/* Update the agent's sentiment value using the Ornstein-Uhlenbeck (OU) Process
 	*
 	* Also advances sentimentEwma over the same elapsed interval.
@@ -328,12 +378,19 @@ public:
 	OrderAction getRandomAction_DEPRECATED();
 	/* Make a random market bid order */
 	std::shared_ptr<Order> makeMarketBid();
-	/* Make a random limit bid order */
-	std::shared_ptr<Order> makeLimitBid();
+	/* Make a random limit bid order
+	*
+	* forceAggressive skips the per-subtype crossing roll and always prices through the
+	* opposite touch. Used when unwinding, where the point is to get filled, not to quote.
+	* fullSize takes the whole affordable size rather than a random slice. Unwinding needs
+	* to converge: a random slice leaves a remainder every time, so the position decays
+	* geometrically instead of closing.
+	*/
+	std::shared_ptr<Order> makeLimitBid(bool forceAggressive = false, bool fullSize = false);
 	/* Make a random market ask order */
 	std::shared_ptr<Order> makeMarketAsk();
-	/* Make a random limit ask order */
-	std::shared_ptr<Order> makeLimitAsk();
+	/* Make a random limit ask order, see makeLimitBid for forceAggressive */
+	std::shared_ptr<Order> makeLimitAsk(bool forceAggressive = false, bool fullSize = false);
 	/* Cancel a random order */
 	void cancelOrder();
 	/* Do nothing */

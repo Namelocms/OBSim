@@ -228,6 +228,39 @@ public:
     /* Ceiling on live transient agents for the current resident population */
     int transientPopulationCap() const;
 
+    /* Advance one transient agent's lifecycle as of simTimeMs
+    *
+    * Called after a transient agent acts, and for every transient on the participation
+    * sweep so that one which has gone dormant off hours still departs rather than sitting
+    * in the market forever. Does nothing for residents.
+    *
+    * Rolls the departure hazard for an agent still trading, moves a leaving agent toward
+    * the pool, and strands one that could not flatten inside its grace window.
+    */
+    void updateTransientLifecycle(std::shared_ptr<Agent> agent, double simTimeMs);
+    /* Put a transient agent into its unwind phase */
+    void beginTransientDeparture(std::shared_ptr<Agent> agent, double simTimeMs);
+    /* Return a clean transient slot to the pool, ready to be rerolled */
+    void poolTransientSlot(std::shared_ptr<Agent> agent);
+    /* Send every live transient agent home, used when the clock is about to skip a window
+    *
+    * A skipped overnight is time in which no market ran and nothing could be evaluated, so
+    * without this a transient agent teleports across it and outlives its own tenure cap by
+    * the length of the gap. Day traders do not sit through a skipped night: they unwind
+    * into the next session, which is what beginning to leave here produces.
+    */
+    void departAllTransients(double simTimeMs);
+
+    /* Transient agents that have begun leaving over the whole run */
+    long long transientDepartures = 0;
+    /* Transient slots returned to the pool over the whole run */
+    long long transientPooled = 0;
+    /* Departures that ran past their grace window still holding, and had to be stranded */
+    long long transientStranded = 0;
+    /* Fired when an agent begins leaving, so tenure and action count can be observed
+    *  before the slot is rerolled and the evidence is gone */
+    std::function<void(std::shared_ptr<Agent>, double)> onTransientDepart;
+
     /* Non-transient agents, the denominator the arrival rate scales against */
     int residentCount = 0;
     /* Sim time arrivals were last drawn for, the Poisson interval runs from here */

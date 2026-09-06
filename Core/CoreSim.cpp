@@ -4,6 +4,7 @@
 #include "include/Enums.h"
 #include "include/Util.h"
 #include "include/SimClock.h"
+#include <algorithm>
 
 // ---- Main Simulation Loop ----
 
@@ -22,6 +23,9 @@ void CoreSim::run(SimClock& clock) {
 	this->liveTransientCount = 0;
 	this->transientSlotsAllocated = 0;
 	this->transientArrivals = 0;
+	this->transientDepartures = 0;
+	this->transientPooled = 0;
+	this->transientStranded = 0;
 	this->lastArrivalCheckMs = 0.0;
 	this->residentCount = 0;
 
@@ -129,11 +133,18 @@ void CoreSim::run(SimClock& clock) {
 		agent->hasPendingEvent = false;
 		clock.simTimeMs = nextEventCall.callTime;
 
-		// Agent has stepped out of the market, drop it until a sweep brings it back
-		if (!agent->isParticipating(this->OB.session, clock.simTimeMs)) { continue; }
+		// Agent has stepped out of the market, drop it until a sweep brings it back.
+		// shouldAct, not isParticipating: an agent on its way out keeps acting until flat.
+		if (!agent->shouldAct(this->OB.session, clock.simTimeMs)) { continue; }
 
 		agent->actRandom();
-		this->scheduleNextEventCall(agent, clock.simTimeMs);
+
+		// Before rescheduling, so a slot that just went back to the pool is not given an
+		// event it would only discard
+		this->updateTransientLifecycle(agent, clock.simTimeMs);
+		if (agent->status != AgentStatus::POOLED) {
+			this->scheduleNextEventCall(agent, clock.simTimeMs);
+		}
 		this->drainWakeQueue(clock.simTimeMs);
 		if (this->onLog) { this->onLog({ LogEntry::Kind::HOLD, clock.simTimeMs, agent->id }); }
 
@@ -392,11 +403,16 @@ bool CoreSim::pumpBackDataEvents(double targetMs, SimClock& clock, long long& ev
 		agent->hasPendingEvent = false;
 		clock.simTimeMs = nextCallTime;
 
-		// Agent has stepped out of the market, drop it until a sweep brings it back
-		if (!agent->isParticipating(this->OB.session, clock.simTimeMs)) { continue; }
+		// Agent has stepped out of the market, drop it until a sweep brings it back.
+		// shouldAct, not isParticipating: an agent on its way out keeps acting until flat.
+		if (!agent->shouldAct(this->OB.session, clock.simTimeMs)) { continue; }
 
 		agent->actRandom();
-		this->scheduleNextEventCall(agent, clock.simTimeMs);
+
+		this->updateTransientLifecycle(agent, clock.simTimeMs);
+		if (agent->status != AgentStatus::POOLED) {
+			this->scheduleNextEventCall(agent, clock.simTimeMs);
+		}
 		this->drainWakeQueue(clock.simTimeMs);
 		++eventsProcessed;
 
@@ -526,6 +542,11 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 		if (this->OB.session == Session::OVERNIGHT && randomDouble(0.0, 1.0) > OVERNIGHT_SIM_PROBABILITY) {
 			double resumeAtMs = MarketCalendar::sessionEndMs(boundaryMs); // overnight ends at the next day's premarket open
 
+			// Nobody transient sits through a night the sim did not simulate. Without this
+			// they cross the gap intact and their recorded tenure runs past the hard cap by
+			// the whole length of the skip.
+			this->departAllTransients(boundaryMs);
+
 			this->skipToTime(resumeAtMs, clock);
 			queueRebuilt = true;
 
@@ -607,6 +628,12 @@ void CoreSim::sweepParticipation(double simTimeMs) {
 		// schedule the entire pool and silently double the population.
 		if (agent->status == AgentStatus::POOLED) { continue; }
 
+		// The departure hazard runs here as well as after an action, so a transient agent
+		// that has gone dormant off hours still leaves instead of holding its slot forever.
+		// Safe to call while iterating: nothing here touches the agents map.
+		this->updateTransientLifecycle(agent, simTimeMs);
+		if (agent->status == AgentStatus::POOLED) { continue; }
+
 		bool participating = agent->isParticipating(this->OB.session, simTimeMs);
 
 		// Lifecycle states outrank session states and are never overwritten by one
@@ -615,8 +642,9 @@ void CoreSim::sweepParticipation(double simTimeMs) {
 		}
 
 		// Agents that have just joined need an event, ones that dropped out simply
-		// stop being rescheduled and fall out of the queue on their own
-		if (participating && !agent->hasPendingEvent) {
+		// stop being rescheduled and fall out of the queue on their own. An agent that is
+		// leaving is scheduled regardless of gating, or it could never finish unwinding.
+		if (agent->shouldAct(this->OB.session, simTimeMs) && !agent->hasPendingEvent) {
 			this->scheduleNextEventCall(agent, simTimeMs);
 		}
 	}
@@ -687,6 +715,116 @@ void CoreSim::processTransientArrivals(double simTimeMs) {
 		++this->transientArrivals;
 		this->scheduleNextEventCall(agent, simTimeMs);
 	}
+}
+
+void CoreSim::updateTransientLifecycle(std::shared_ptr<Agent> agent, double simTimeMs) {
+	if (agent == nullptr || !agent->isTransient) { return; }
+	if (agent->status == AgentStatus::POOLED) { return; }
+
+	// The agent's own order maps are the cheap view and are kept in lockstep with the book.
+	// OrderBook::agentHasRestingOrders is the authoritative one and is used where it matters,
+	// on reroll -- running it here would walk the whole book for every transient on every
+	// sweep, to answer a question the agent already knows the answer to.
+	bool clean = agent->holdings.empty() && agent->activeBids.empty() && agent->activeAsks.empty();
+
+	// A transient agent with nothing left is finished, whether it chose to leave or went
+	// broke. BANKRUPT is only ever set with no cash, no holdings and no orders, so a
+	// bankrupt transient is clean by definition and its slot is free to reuse.
+	if (agent->status == AgentStatus::LEAVING || agent->status == AgentStatus::BANKRUPT) {
+		if (clean) { this->poolTransientSlot(agent); return; }
+
+		// Could not get flat inside the grace window. It is NOT retired holding its shares:
+		// it stays in the market on a long horizon, still working the position off, so the
+		// float keeps circulating. Jittered upward only, which keeps the floor strictly
+		// above the stranded threshold and makes this a one-time stretch.
+		double strandedFloorMs = MarketCalendar::minutesToMs(TRANSIENT_STRANDED_REACTION_MINUTES);
+		if (agent->isStranded(simTimeMs) && agent->reactionTimeFloor < strandedFloorMs) {
+			agent->reactionTimeFloor = strandedFloorMs * randomDouble(1.0, 1.5);
+			++this->transientStranded;
+		}
+		return;
+	}
+
+	// The commitment window is what stops the tenure distribution collapsing onto zero
+	if (simTimeMs < agent->minTenureEndsMs) { return; }
+
+	double dtMs = simTimeMs - agent->lastDepartCheckMs;
+	agent->lastDepartCheckMs = simTimeMs;
+	if (dtMs <= 0.0) { return; }
+
+	if (simTimeMs - agent->arrivedAtMs >= MarketCalendar::minutesToMs(TRANSIENT_MAX_TENURE_MINUTES)) {
+		this->beginTransientDeparture(agent, simTimeMs);
+		return;
+	}
+
+	// Hazard over elapsed SIM TIME, so an agent checking every two seconds and one checking
+	// every fifteen minutes draw from the same tenure distribution. Adversity shortens the
+	// time constant; a favourable market does not lengthen it.
+	double tau = (agent->tenureHalfLifeMs / 0.693147180559945309417)
+		/ (1.0 + TRANSIENT_ADVERSITY_GAIN * agent->adversity());
+	if (tau <= 0.0) { this->beginTransientDeparture(agent, simTimeMs); return; }
+
+	double pDepart = 1.0 - std::exp(-dtMs / tau);
+	if (randomDouble(0.0, 1.0) < pDepart) { this->beginTransientDeparture(agent, simTimeMs); }
+}
+void CoreSim::beginTransientDeparture(std::shared_ptr<Agent> agent, double simTimeMs) {
+	if (agent == nullptr || agent->status == AgentStatus::LEAVING
+		|| agent->status == AgentStatus::POOLED) {
+		return;
+	}
+
+	agent->status = AgentStatus::LEAVING;
+	agent->leavingSinceMs = simTimeMs;
+	++this->transientDepartures;
+
+	// Reported before anything is unwound, while tenure and action count still describe the
+	// life that just ended
+	if (this->onTransientDepart) { this->onTransientDepart(agent, simTimeMs); }
+
+	// Stop adding to the position. Collect first: cancelOrder erases from the very map
+	// being iterated.
+	OrderAction entry = agent->entrySide();
+	std::vector<std::shared_ptr<Order>> toCancel;
+	const auto& entryOrders = (entry == OrderAction::BID) ? agent->activeBids : agent->activeAsks;
+	toCancel.reserve(entryOrders.size());
+	for (const auto& kv : entryOrders) { toCancel.push_back(kv.second); }
+	for (const std::shared_ptr<Order>& order : toCancel) { this->OB.cancelOrder(order, agent); }
+
+	// An agent that arrived, never filled, and left is already clean
+	if (agent->holdings.empty() && agent->activeBids.empty() && agent->activeAsks.empty()) {
+		this->poolTransientSlot(agent);
+	}
+}
+void CoreSim::departAllTransients(double simTimeMs) {
+	if (this->liveTransientCount <= 0) { return; }
+
+	// Safe to iterate: beginTransientDeparture only touches order queues and the free list
+	for (const auto& kv : this->OB.agents) {
+		std::shared_ptr<Agent> agent = kv.second;
+		if (agent == nullptr || !agent->isTransient) { continue; }
+		if (agent->status == AgentStatus::POOLED || agent->status == AgentStatus::LEAVING) { continue; }
+		this->beginTransientDeparture(agent, simTimeMs);
+	}
+}
+void CoreSim::poolTransientSlot(std::shared_ptr<Agent> agent) {
+	if (agent == nullptr || agent->status == AgentStatus::POOLED) { return; }
+
+	agent->status = AgentStatus::POOLED;
+	agent->leavingSinceMs = 0.0;
+	agent->hasPendingEvent = false;
+
+	// Bump so any event already queued against this slot is discarded on pop. An empty seat
+	// must not act, and rollTransientPersonality bumps again when the seat is refilled.
+	agent->eventGeneration++;
+
+	// A wake is meaningless for a slot nobody is sitting in
+	this->OB.wakeQueue.erase(
+		std::remove(this->OB.wakeQueue.begin(), this->OB.wakeQueue.end(), agent->id),
+		this->OB.wakeQueue.end());
+
+	if (this->liveTransientCount > 0) { --this->liveTransientCount; }
+	++this->transientPooled;
+	this->transientFreeList.push_back(agent->id);
 }
 
 bool CoreSim::rollTransientPersonality(std::shared_ptr<Agent> agent, double simTimeMs) {
