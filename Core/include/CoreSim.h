@@ -30,6 +30,12 @@ struct Config {
     unsigned short agentStartCount = 100;
     unsigned int obShareFloat = 100'000;
     double obStartPrice = 1.00;
+    /* Target concurrent transient agents as a share of the resident population, 0 disables
+    *
+    * The whole transient path is skipped when this is 0, consuming no RNG, so a run with
+    * transient agents off reproduces a pre-feature run exactly.
+    */
+    double transientFraction = 0.0;
 
     /* ---- Derived back-data duration ----
     *
@@ -184,6 +190,46 @@ public:
     */
     void sweepParticipation(double simTimeMs);
 
+    // ---- Transient Agent Functions ----
+
+    /* Give a slot a completely fresh transient personality, as of simTimeMs
+    *
+    * The single source of truth for what a transient agent is. Both the allocate path and
+    * the recycle path go through this, so a reused slot is indistinguishable from a newly
+    * created one and the two cannot drift apart.
+    *
+    * Rerolls everything the constructor drew, so nothing of a previous incarnation
+    * survives except the id. Bumps eventGeneration rather than resetting it, leaving any
+    * event from the previous incarnation stale.
+    *
+    * Returns false and changes nothing if the slot is not clean. Holdings and resting
+    * orders are a PRECONDITION, never something this clears: an Order carries only its
+    * agent's id, so rerolling a slot that still owns orders would hand their fills and
+    * escrow to the new occupant.
+    */
+    bool rollTransientPersonality(std::shared_ptr<Agent> agent, double simTimeMs);
+    /* Get a transient agent ready to enter the market at simTimeMs
+    *
+    * Prefers reviving a pooled slot over allocating a new one, so the agents map reaches a
+    * high-water mark instead of growing. Returns nullptr only if the population is capped
+    * out or a slot could not be prepared.
+    */
+    std::shared_ptr<Agent> acquireTransientSlot(double simTimeMs);
+
+    /* Ids of pooled transient slots waiting to be rerolled
+    *
+    * An explicit free list rather than a scan of the agents map: deterministic, O(1), and
+    * independent of hash ordering. This is the register that makes "modify, never add"
+    * possible.
+    */
+    std::vector<std::string> transientFreeList;
+    /* Transient agents currently in the market, pooled slots excluded */
+    int liveTransientCount = 0;
+    /* Transient slots ever allocated, the high-water mark of the pool */
+    int transientSlotsAllocated = 0;
+    /* Transient agents that have entered the market over the whole run */
+    long long transientArrivals = 0;
+
     /* Sim time of the next participation sweep */
     double nextParticipationSweepMs = 0.0;
 
@@ -196,7 +242,8 @@ public:
         unsigned int minLiquidity = 0,
         unsigned short agentStartCount = 100,
         unsigned int obShareFloat = 250'000,
-        double obStartPrice = 1.00
+        double obStartPrice = 1.00,
+        double transientFraction = 0.0
     );
 
 private:

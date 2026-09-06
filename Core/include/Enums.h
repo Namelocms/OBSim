@@ -7,9 +7,24 @@ enum class OrderAction { BID, ASK, HOLD, CANCEL };
 enum class OrderType { MARKET, LIMIT };
 enum class ID_TYPE { ORDER, AGENT };
 enum class Session { PREMARKET, REGULAR, AFTERHOURS, OVERNIGHT, CLOSED };
-enum class AgentStatus { ACTIVE, INACTIVE, BANKRUPT };
+/* ACTIVE/INACTIVE are SESSION states, reassigned on every participation sweep.
+*  BANKRUPT/LEAVING/POOLED are LIFECYCLE states and must never be overwritten by one. */
+enum class AgentStatus { ACTIVE, INACTIVE, BANKRUPT, LEAVING, POOLED };
 enum class AgentType { RETAIL, INSTITUTION };
 enum class AgentSubType { NOISE, MOMENTUM, ALGO, INFORMED };
+
+/* Is this a lifecycle state rather than a session state?
+*
+* sweepParticipation reassigns ACTIVE/INACTIVE on every pass. Anything that answers true
+* here is off that track: a bankrupt agent, an agent unwinding on its way out, or a pooled
+* slot waiting to be rerolled. Overwriting one of these with a session state is how a
+* pooled slot silently rejoins the market.
+*/
+inline bool isLifecycleStatus(AgentStatus status) {
+	return status == AgentStatus::BANKRUPT
+		|| status == AgentStatus::LEAVING
+		|| status == AgentStatus::POOLED;
+}
 
 class EnumStrings {
 public:
@@ -42,7 +57,9 @@ public:
 	std::unordered_map<AgentStatus, std::string> agentStatusString = {
 		{AgentStatus::ACTIVE, "ACTIVE"},
 		{AgentStatus::INACTIVE, "INACTIVE"},
-		{AgentStatus::BANKRUPT, "BANKRUPT"}
+		{AgentStatus::BANKRUPT, "BANKRUPT"},
+		{AgentStatus::LEAVING, "LEAVING"},
+		{AgentStatus::POOLED, "POOLED"}
 	};
 	std::unordered_map<AgentType, std::string> agentTypeString = {
 		{AgentType::RETAIL, "RETAIL"},

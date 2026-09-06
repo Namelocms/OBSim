@@ -410,13 +410,6 @@ double Agent::rollOrderExpiry(double nowMs) {
 
 	return expiry;
 }
-void Agent::resetToInitial(double initialCash) {
-	this->cash = initialCash;
-	this->status = AgentStatus::INACTIVE;
-	this->holdings.clear();
-	this->activeAsks.clear();
-	this->activeBids.clear();
-}
 double Agent::getBetaPrice(double currentPrice, OrderAction side, double a, double b, double epsilon) {
 	double x, discount, premium, preRounded, precision, betaPrice;
 	double maxVariance = this->getMaxVariance(currentPrice);

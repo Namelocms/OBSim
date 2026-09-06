@@ -17,6 +17,12 @@ void CoreSim::run(SimClock& clock) {
 	this->OB.resetToInitial(this->parameters.obStartPrice, this->parameters.obShareFloat, true);  // = OrderBook(clock, this->parameters.obStartPrice, this->parameters.obShareFloat);
 	this->OB.clock = &clock;
 
+	// The agents map was just cleared, so every pooled slot id in the free list is dangling
+	this->transientFreeList.clear();
+	this->liveTransientCount = 0;
+	this->transientSlotsAllocated = 0;
+	this->transientArrivals = 0;
+
 	//std::cout << "Initializing Agents..." << std::endl;
 	this->initAgents(this->parameters.agentStartCount);
 
@@ -583,10 +589,16 @@ void CoreSim::sweepParticipation(double simTimeMs) {
 		std::shared_ptr<Agent> agent = kv.second;
 		if (agent == nullptr) { continue; }
 
+		// A pooled slot is not a participant. It is an unoccupied agent object waiting to
+		// be rerolled, and must never be given a session state or an event -- during
+		// REGULAR the participation rate is 1.0, so treating one as merely INACTIVE would
+		// schedule the entire pool and silently double the population.
+		if (agent->status == AgentStatus::POOLED) { continue; }
+
 		bool participating = agent->isParticipating(this->OB.session, simTimeMs);
 
-		// Bankruptcy is a lifecycle state, never overwrite it with a session state
-		if (agent->status != AgentStatus::BANKRUPT) {
+		// Lifecycle states outrank session states and are never overwritten by one
+		if (!isLifecycleStatus(agent->status)) {
 			agent->status = participating ? AgentStatus::ACTIVE : AgentStatus::INACTIVE;
 		}
 
@@ -599,6 +611,123 @@ void CoreSim::sweepParticipation(double simTimeMs) {
 
 	this->nextParticipationSweepMs = simTimeMs + MarketCalendar::minutesToMs(PARTICIPATION_SWEEP_MINUTES);
 }
+// ---- Transient Agent Functions ----
+
+bool CoreSim::rollTransientPersonality(std::shared_ptr<Agent> agent, double simTimeMs) {
+	if (agent == nullptr) { return false; }
+
+	// The slot must be clean. This is checked, never fixed: silently clearing holdings
+	// would destroy shares and silently dropping orders would strand their escrow, and
+	// either way it would hide the real bug, which is a slot pooled before it was flat.
+	if (!agent->holdings.empty() || !agent->activeBids.empty() || !agent->activeAsks.empty()
+		|| this->OB.agentHasRestingOrders(agent->id)) {
+		if (this->onLog) {
+			this->onLog({ LogEntry::Kind::HOLD, simTimeMs,
+				"REFUSED to reroll unclean transient slot " + agent->id });
+		}
+		return false;
+	}
+
+	agent->isTransient = true;
+	agent->incarnation++;
+
+	// Long biased, like every agent in the sim today. A future SHORT subtype sets this to
+	// -1 and everything below signs itself off it, arrival sentiment included.
+	agent->directionalBias = 1.0;
+
+	// Subtype, cumulative thresholds over one draw. ALGO is deliberately absent.
+	double roll = randomDouble(0.0, 1.0);
+	if (roll < TRANSIENT_MIX_NOISE) { agent->subType = AgentSubType::NOISE; }
+	else if (roll < TRANSIENT_MIX_NOISE + TRANSIENT_MIX_MOMENTUM) { agent->subType = AgentSubType::MOMENTUM; }
+	else { agent->subType = AgentSubType::INFORMED; }
+
+	agent->type = AgentType::RETAIL;
+
+	switch (agent->subType) {
+	case AgentSubType::MOMENTUM:
+		agent->reactionTimeFloor = randomDouble(TRANSIENT_REACTION_MIN_MOMENTUM_MS, TRANSIENT_REACTION_MAX_MOMENTUM_MS);
+		break;
+	case AgentSubType::INFORMED:
+		agent->reactionTimeFloor = randomDouble(TRANSIENT_REACTION_MIN_INFORMED_MS, TRANSIENT_REACTION_MAX_INFORMED_MS);
+		break;
+	default:
+		agent->reactionTimeFloor = randomDouble(TRANSIENT_REACTION_MIN_NOISE_MS, TRANSIENT_REACTION_MAX_NOISE_MS);
+		break;
+	}
+	agent->reactionTime = agent->reactionTimeFloor;
+	agent->idleReactionTimeFloor = 0.0;  // no ALGO backoff, transient agents are takers
+
+	agent->cash = randomDouble(TRANSIENT_CASH_MIN, TRANSIENT_CASH_MAX);
+
+	// Arrives holding conviction, not neutral: it turned up wanting to trade. OU then
+	// pulls this back toward the market's neutral level over its tenure, which is what
+	// makes "arrived keen, conviction faded, left" emerge rather than being scripted.
+	agent->sentiment = randomDouble(TRANSIENT_ARRIVAL_SENTIMENT_MIN, TRANSIENT_ARRIVAL_SENTIMENT_MAX)
+		* agent->directionalBias;
+	agent->sentimentTheta = randomDouble(0.01, 1.0);
+	agent->sentimentSigma = randomDouble(0.0, 0.99);
+	agent->sentimentEwma = agent->sentiment;
+
+	// Drawn from [0, rate) for the session it is arriving into, so it is always below the
+	// rate and therefore participating on arrival. An agent that showed up during the
+	// premarket is by definition one of the people who trade the premarket. It can still
+	// drop out later as the rate decays.
+	double rate = agent->participationRate(this->OB.session, simTimeMs);
+	agent->participationThreshold = randomDouble(0.0, rate);
+
+	double halfLifeMinutes = TRANSIENT_TENURE_HALFLIFE_MINUTES
+		* randomDouble(1.0 - TRANSIENT_TENURE_HALFLIFE_SPREAD, 1.0 + TRANSIENT_TENURE_HALFLIFE_SPREAD);
+	agent->tenureHalfLifeMs = MarketCalendar::minutesToMs(halfLifeMinutes);
+	agent->arrivedAtMs = simTimeMs;
+	agent->minTenureEndsMs = simTimeMs + MarketCalendar::minutesToMs(TRANSIENT_MIN_TENURE_MINUTES);
+	// The hazard integrates from the end of the commitment window, not from arrival
+	agent->lastDepartCheckMs = agent->minTenureEndsMs;
+	agent->leavingSinceMs = 0.0;
+
+	agent->actionCount = 0;
+	agent->status = AgentStatus::ACTIVE;
+
+	// Bump, never reset: an event from the previous incarnation may still be queued, and
+	// resetting would let it alias a live one instead of being discarded as stale.
+	agent->eventGeneration++;
+	agent->hasPendingEvent = false;
+
+	return true;
+}
+std::shared_ptr<Agent> CoreSim::acquireTransientSlot(double simTimeMs) {
+	// Prefer reviving a pooled slot over allocating. Only when the pool is empty does the
+	// agents map grow, so it settles at the peak concurrent transient population.
+	while (!this->transientFreeList.empty()) {
+		std::string slotId = this->transientFreeList.back();
+		this->transientFreeList.pop_back();
+
+		std::shared_ptr<Agent> slot = this->OB.getAgent(slotId);
+		if (slot == nullptr) { continue; }
+
+		// A slot that is not clean should never have been pooled. Drop it rather than
+		// returning it to the free list, and fall through to allocating instead, so one
+		// bad slot cannot stall arrivals.
+		if (this->rollTransientPersonality(slot, simTimeMs)) { return slot; }
+	}
+
+	std::shared_ptr<Agent> agent = std::make_shared<Agent>(
+		this->OB.makeId(ID_TYPE::AGENT),
+		1000.0,                  // placeholder, rerolled below
+		0.0,                     // placeholder, rerolled below
+		AgentStatus::ACTIVE,
+		AgentType::RETAIL,
+		AgentSubType::NOISE,
+		this->OB,
+		this->ME
+	);
+
+	if (!this->rollTransientPersonality(agent, simTimeMs)) { return nullptr; }
+
+	this->OB.upsertAgent(agent);
+	++this->transientSlotsAllocated;
+	return agent;
+}
+
 void CoreSim::drainWakeQueue(double simTimeMs) {
 	if (this->OB.wakeQueue.empty()) { return; }
 
@@ -626,7 +755,7 @@ void CoreSim::drainWakeQueue(double simTimeMs) {
 
 // ---- Utility Functions ----
 
-void CoreSim::setParameters(unsigned int seed, unsigned int backDataDays, Session liveStartSession, unsigned int minLiquidity, unsigned short agentStartCount, unsigned int obShareFloat, double obStartPrice) {
+void CoreSim::setParameters(unsigned int seed, unsigned int backDataDays, Session liveStartSession, unsigned int minLiquidity, unsigned short agentStartCount, unsigned int obShareFloat, double obStartPrice, double transientFraction) {
 
 	this->parameters.seed = seed;
 	this->parameters.backDataDays = backDataDays;
@@ -635,6 +764,7 @@ void CoreSim::setParameters(unsigned int seed, unsigned int backDataDays, Sessio
 	this->parameters.agentStartCount = agentStartCount;
 	this->parameters.obShareFloat = obShareFloat;
 	this->parameters.obStartPrice = obStartPrice;
+	this->parameters.transientFraction = transientFraction;
 
 	setSeed(this->parameters.seed);
 }

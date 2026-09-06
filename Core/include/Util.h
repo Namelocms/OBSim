@@ -39,6 +39,16 @@ inline double sampleBeta(double alpha, double beta) {
     double y = gb(generator);
     return x / (x + y);
 }
+/* Get a count from a Poisson distribution with the given mean
+*
+* Returns 0 for a non-positive mean without touching the generator, which is what keeps
+* a disabled arrival process from consuming RNG and shifting every downstream draw.
+*/
+inline unsigned int samplePoisson(double mean) {
+    if (!(mean > 0.0)) { return 0; }
+    std::poisson_distribution<unsigned int> dist(mean);
+    return dist(generator);
+}
 /* Get a value from normal distribution */
 inline double sampleNormal() {
     std::normal_distribution<double> dist(0.0, 1.0);

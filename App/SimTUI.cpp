@@ -451,6 +451,8 @@ void SimTUI::refreshState_() {
         case AgentStatus::ACTIVE:   row.status = "ACT"; break;
         case AgentStatus::INACTIVE: row.status = "IDL"; break;
         case AgentStatus::BANKRUPT: row.status = "BNK"; break;
+        case AgentStatus::LEAVING:  row.status = "LVG"; break;
+        case AgentStatus::POOLED:   row.status = "PLD"; break;
         }
         state_.agents.push_back(std::move(row));
         if (++cnt >= 200) break;

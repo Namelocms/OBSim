@@ -72,6 +72,60 @@ inline constexpr double SENTIMENT_EWMA_HALFLIFE_MINUTES = 20.0;
 inline constexpr double SENTIMENT_EWMA_TAU_MS =
 	(SENTIMENT_EWMA_HALFLIFE_MINUTES * 60'000.0) / 0.693147180559945309417;
 
+/* ---- Transient agents ----
+*
+* The resident population is fixed for the life of a run, which makes activity a constant
+* function of agentStartCount. Transient agents are the floating part: they arrive, trade
+* for a drawn tenure, and leave again.
+*
+* They are RETAIL only, and never ALGO. Market making infrastructure does not come and go
+* for an hour at a time, so the transient mix is takers: noise traders and momentum
+* chasers, with a small informed minority.
+*/
+inline constexpr double TRANSIENT_MIX_NOISE = 0.50;
+inline constexpr double TRANSIENT_MIX_MOMENTUM = 0.40;
+/* INFORMED takes the remainder, so the three always sum to 1 */
+
+/* Reaction floors, deliberately compressed against resident retail's 200 ms - 1 hr.
+*
+* A trader who has just deliberately shown up to trade a move acts on a minutes cadence,
+* not an hourly one. This is not cosmetic: with a mean tenure near 48 minutes, resident
+* retail reaction times would give most transient agents a single action before they left,
+* which is exactly the degenerate "arrive, trade once, leave" behaviour being avoided.
+*/
+inline constexpr double TRANSIENT_REACTION_MIN_NOISE_MS = 2'000.0;
+inline constexpr double TRANSIENT_REACTION_MAX_NOISE_MS = 600'000.0;
+inline constexpr double TRANSIENT_REACTION_MIN_MOMENTUM_MS = 2'000.0;
+inline constexpr double TRANSIENT_REACTION_MAX_MOMENTUM_MS = 300'000.0;
+inline constexpr double TRANSIENT_REACTION_MIN_INFORMED_MS = 1'000.0;
+inline constexpr double TRANSIENT_REACTION_MAX_INFORMED_MS = 300'000.0;
+
+/* Day trader sized, a little above the resident retail median */
+inline constexpr double TRANSIENT_CASH_MIN = 200.0;
+inline constexpr double TRANSIENT_CASH_MAX = 5'000.0;
+
+/* ---- Tenure ----
+*
+* Tenure is a fixed commitment window followed by an exponential hazard, not a deadline
+* drawn up front, so that adversity can shorten it while the agent is still in the market.
+*
+* The floor is what stops the distribution being degenerate. A bare exponential has its
+* mode at zero, so without it most transient agents would leave almost immediately.
+*/
+inline constexpr double TRANSIENT_MIN_TENURE_MINUTES = 5.0;
+inline constexpr double TRANSIENT_TENURE_HALFLIFE_MINUTES = 30.0;
+/* Fractional spread of the per-agent half-life around the value above, so the population
+*  holds both scalpers and agents that sit for hours rather than one uniform lifespan */
+inline constexpr double TRANSIENT_TENURE_HALFLIFE_SPREAD = 0.50;
+
+/* Lowest conviction a transient agent can arrive with, as |sentiment|
+*
+* They turned up because they wanted to trade, so they do not arrive neutral. Signed by
+* directionalBias, so a future short biased agent arrives bearish by the same rule.
+*/
+inline constexpr double TRANSIENT_ARRIVAL_SENTIMENT_MIN = 0.10;
+inline constexpr double TRANSIENT_ARRIVAL_SENTIMENT_MAX = 0.90;
+
 class Agent : public std::enable_shared_from_this<Agent> {
 public:
 	/* Agent's unique ID */
@@ -140,6 +194,28 @@ public:
 	double sentimentTemperature;
 	/* Agent's status */
 	AgentStatus status;
+	/* True while this agent slot is a transient participant rather than a resident
+	*
+	* Stays true across pooling and rerolling: the slot remains a transient slot, it is
+	* just unoccupied between incarnations.
+	*/
+	bool isTransient = false;
+	/* Which incarnation of this slot is currently live, bumped by every reroll
+	*
+	* An agent id is reused, so this is what distinguishes one occupant of a slot from the
+	* next. Anything attributed to a slot should carry the incarnation it was created under.
+	*/
+	unsigned long long incarnation = 0;
+	/* Sim time this incarnation entered the market */
+	double arrivedAtMs = 0.0;
+	/* Sim time the commitment window closes and the departure hazard starts running */
+	double minTenureEndsMs = 0.0;
+	/* This agent's own tenure half-life in ms, drawn per incarnation */
+	double tenureHalfLifeMs = 0.0;
+	/* Sim time the departure hazard was last evaluated, the hazard integrates from here */
+	double lastDepartCheckMs = 0.0;
+	/* Sim time this agent started unwinding, 0 while it is not leaving */
+	double leavingSinceMs = 0.0;
 	/* Agent main type */
 	AgentType type;
 	/* Agent sub-type */
@@ -220,8 +296,6 @@ public:
 	void hold();
 
 // ---- Utility Operations ----
-	/* Resets the agent to its initial state */
-	void resetToInitial(double initialCash = 100.00);
 	/* Roll the sim time a limit order placed at nowMs should expire at
 	*
 	* Defaults to the next expiring session boundary (the day order equivalent).
