@@ -878,8 +878,7 @@ bool CoreSim::rollTransientPersonality(std::shared_ptr<Agent> agent, double simT
 	// makes "arrived keen, conviction faded, left" emerge rather than being scripted.
 	agent->sentiment = randomDouble(TRANSIENT_ARRIVAL_SENTIMENT_MIN, TRANSIENT_ARRIVAL_SENTIMENT_MAX)
 		* agent->directionalBias;
-	agent->sentimentTheta = randomDouble(0.01, 1.0);
-	agent->sentimentSigma = randomDouble(0.0, 0.99);
+	agent->rollSentimentProcess();
 	agent->sentimentEwma = agent->sentiment;
 
 	// Drawn from [0, rate) for the session it is arriving into, so it is always below the

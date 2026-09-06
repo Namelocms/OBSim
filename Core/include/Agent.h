@@ -57,6 +57,26 @@ inline constexpr double EXT_PARTICIPATION_RETAIL_NOISE = 0.03;
 /* Share of its base rate retail retains at the deepest point of the overnight */
 inline constexpr double RETAIL_EXTENDED_FLOOR_FACTOR = 0.20;
 
+/* ---- Sentiment persistence ----
+*
+* How long an agent holds an opinion. The model previously left this undefined: the OU
+* decay is exp(-theta * r) with r in MILLISECONDS, while sentimentTheta was drawn from
+* [0.01, 1.0], so theta * r ran from 108 to 595,000 and the decay term was zero for every
+* agent. Measured lag-1 autocorrelation of an agent's own sentiment was -0.003: it was
+* white noise, redrawn from scratch on every action, and sentimentTheta had no effect.
+*
+* The magnitudes were never wrong. sigma / sqrt(2 * theta) is exactly the stationary
+* standard deviation of an OU process, so the spread of convictions the sim already
+* produces is correct and is preserved unchanged. Only the timescale is added.
+*
+* Drawn as a RATE rather than a duration, matching the shape of the uniform draw
+* sentimentTheta already used, then converted once. The range spans a few minutes to about
+* half an active trading day. Nothing here references price, volume, or any notion of a
+* favourable market: it says only how long a view lasts, not what the view should be.
+*/
+inline constexpr double SENTIMENT_HALFLIFE_MIN_MINUTES = 5.0;
+inline constexpr double SENTIMENT_HALFLIFE_MAX_MINUTES = 480.0;
+
 /* ---- Sentiment averaging ----
 *
 * Agents act on irregular schedules, from sub-millisecond to over an hour apart, so a
@@ -261,10 +281,23 @@ public:
 	* enum so a partially hedged agent can later sit somewhere between the two.
 	*/
 	double directionalBias = 1.0;
-	/* Agent's speed of sentiment mean reversion to OB.marketNeutralSentiment, higher = faster */
-	double sentimentTheta;
-	/* Agent's sentiment volatility, higher = larger swings */
-	double sentimentSigma;
+	/* Rate of sentiment mean reversion toward OB.marketNeutralSentiment, per millisecond
+	*
+	* DERIVED from sentimentHalfLifeMs, never drawn directly. Drawing it directly is what
+	* made the process degenerate: the units are per millisecond, so any value of order one
+	* reverts completely between two actions.
+	*/
+	double sentimentTheta = 0.0;
+	/* Instantaneous volatility of the sentiment process
+	*
+	* DERIVED so that sigma / sqrt(2 * theta) equals sentimentStationarySd. Shrinking theta
+	* without moving sigma would inflate the stationary spread by orders of magnitude.
+	*/
+	double sentimentSigma = 0.0;
+	/* How long this agent holds a view, as a half-life in ms */
+	double sentimentHalfLifeMs = 0.0;
+	/* Long-run spread of this agent's sentiment, the OU stationary standard deviation */
+	double sentimentStationarySd = 0.0;
 	/* Controls agent's randomness and sharpness of the sentiment probability distribution */
 	double sentimentTemperature;
 	/* Agent's status */
@@ -358,6 +391,11 @@ public:
 	bool shouldAct(Session session, double simTimeMs) const;
 	/* Is this leaving agent past its unwind window and still holding? */
 	bool isStranded(double nowMs) const;
+	/* Draw this agent's sentiment process: its conviction spread and how long views last
+	*
+	* One place, used by construction and by transient rerolls, so the two cannot diverge.
+	*/
+	void rollSentimentProcess();
 	/* Update the agent's sentiment value using the Ornstein-Uhlenbeck (OU) Process
 	*
 	* Also advances sentimentEwma over the same elapsed interval.

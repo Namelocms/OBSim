@@ -14,11 +14,12 @@ Agent::Agent(std::string id, double reactionTimeFloor, double cash, AgentStatus 
 	reactionTime(reactionTimeFloor), cash(cash), 
 	status(status), type(type), subType(subType), 
 	OB(ob), ME(me), 
-	sentiment(randomDouble(-0.9, 0.9)), sentimentTheta(randomDouble(0.01, 1.0)),
-	sentimentSigma(randomDouble(0.0, 0.99)), sentimentTemperature(0.5),
+	sentiment(randomDouble(-0.9, 0.9)), sentimentTemperature(0.5),
 	participationThreshold(randomDouble(0.0, 1.0)) {
 
 	this->sentimentActions = { OrderAction::ASK, OrderAction::HOLD, OrderAction::BID };
+
+	this->rollSentimentProcess();
 
 	// Seed the average with the opening sentiment. Assigned here rather than in the
 	// initialiser list because members initialise in declaration order, not list order,
@@ -220,6 +221,28 @@ bool Agent::shouldAct(Session session, double simTimeMs) const {
 bool Agent::isStranded(double nowMs) const {
 	if (this->status != AgentStatus::LEAVING || this->leavingSinceMs <= 0.0) { return false; }
 	return (nowMs - this->leavingSinceMs) >= (TRANSIENT_LEAVING_GRACE_MINUTES * 60'000.0);
+}
+void Agent::rollSentimentProcess() {
+	// ---- Conviction spread ----
+	// The same two draws the model has always made, combined the same way. sigma /
+	// sqrt(2 * theta) IS the stationary standard deviation of an OU process, which is what
+	// the old code's noiseScaling term collapsed to once exp(-2*theta*r) reached zero -- so
+	// this reproduces today's spread of convictions exactly, agent for agent.
+	double shapeTheta = randomDouble(0.01, 1.0);
+	double shapeSigma = randomDouble(0.0, 0.99);
+	this->sentimentStationarySd = shapeSigma / std::sqrt(2.0 * shapeTheta);
+
+	// ---- Persistence ----
+	// Drawn as a rate, so the distribution keeps the shape of the uniform draw that used to
+	// feed sentimentTheta directly, then converted into a duration in exactly one place.
+	double halfLifeMinutes = 1.0 / randomDouble(1.0 / SENTIMENT_HALFLIFE_MAX_MINUTES,
+		1.0 / SENTIMENT_HALFLIFE_MIN_MINUTES);
+	this->sentimentHalfLifeMs = halfLifeMinutes * 60'000.0;
+
+	// theta in per-millisecond units, matching the r that updateSentiment passes it
+	this->sentimentTheta = 0.693147180559945309417 / this->sentimentHalfLifeMs;
+	// and sigma chosen so the stationary spread above is what the process actually settles at
+	this->sentimentSigma = this->sentimentStationarySd * std::sqrt(2.0 * this->sentimentTheta);
 }
 void Agent::updateSentiment() {
 	double s0 = this->sentiment;
