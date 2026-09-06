@@ -15,7 +15,8 @@ Agent::Agent(std::string id, double reactionTimeFloor, double cash, AgentStatus 
 	status(status), type(type), subType(subType), 
 	OB(ob), ME(me), 
 	sentiment(randomDouble(-0.9, 0.9)), sentimentTheta(randomDouble(0.01, 1.0)),
-	sentimentSigma(randomDouble(0.0, 0.99)), sentimentTemperature(0.5) {
+	sentimentSigma(randomDouble(0.0, 0.99)), sentimentTemperature(0.5),
+	participationThreshold(randomDouble(0.0, 1.0)) {
 
 	this->sentimentActions = { OrderAction::ASK, OrderAction::HOLD, OrderAction::BID };
 }
@@ -420,6 +421,38 @@ bool Agent::rollAggressive() {
 	}
 
 	return randomDouble(0.0, 1.0) < aggression;
+}
+double Agent::participationRate(Session session, double simTimeMs) const {
+	// The whole population trades the main session
+	if (session == Session::REGULAR) { return 1.0; }
+
+	double base = 0.0;
+	if (this->type == AgentType::INSTITUTION) {
+		base = (this->subType == AgentSubType::ALGO)
+			? EXT_PARTICIPATION_INST_ALGO
+			: EXT_PARTICIPATION_INST_INFORMED;
+
+		// Institutional desks cover extended hours consistently, no taper
+		return base;
+	}
+
+	switch (this->subType) {
+	case AgentSubType::ALGO:     base = EXT_PARTICIPATION_RETAIL_ALGO;     break;
+	case AgentSubType::INFORMED: base = EXT_PARTICIPATION_RETAIL_INFORMED; break;
+	case AgentSubType::MOMENTUM: base = EXT_PARTICIPATION_RETAIL_MOMENTUM; break;
+	default:                     base = EXT_PARTICIPATION_RETAIL_NOISE;    break;
+	}
+
+	// Retail drains away after the close and refills into the open. Progress runs
+	// 0 (full base rate) to 1 (floor), so premarket is the mirror of the decay.
+	double progress = (session == Session::PREMARKET)
+		? 1.0 - MarketCalendar::premarketProgress(simTimeMs)
+		: MarketCalendar::closingDecayProgress(simTimeMs);
+
+	return base * std::pow(RETAIL_EXTENDED_FLOOR_FACTOR, progress);
+}
+bool Agent::isParticipating(Session session, double simTimeMs) const {
+	return this->participationThreshold < this->participationRate(session, simTimeMs);
 }
 double Agent::getMarketablePrice(OrderAction side, double epsilon) {
 	// Price against the opposite touch, that is what makes the order marketable

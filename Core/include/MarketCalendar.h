@@ -133,6 +133,30 @@ inline bool isActiveSession(Session session) {
 	return session == Session::PREMARKET || session == Session::REGULAR || session == Session::AFTERHOURS;
 }
 
+// ---- Participation Curve Operations ----
+
+/* Progress through the post-close decay span, 0 at the afterhours open, 1 at the next premarket open
+*
+* Afterhours and overnight form one continuous decay. Activity tapers from the
+* close, keeps falling through the night, and bottoms out just before premarket.
+* Returns 0 for any time before the afterhours open.
+*/
+inline double closingDecayProgress(double simTimeMs) {
+	double into = minutesIntoDay(simTimeMs);
+	if (into < AFTERHOURS_OPEN_MINUTES) { return 0.0; }
+	return (into - AFTERHOURS_OPEN_MINUTES) / (AFTERHOURS_MINUTES + OVERNIGHT_MINUTES);
+}
+/* Progress through premarket, 0 at the premarket open, 1 at the regular open
+*
+* Mirrors the closing decay: participation builds back up through premarket and
+* is whole again by the opening bell.
+*/
+inline double premarketProgress(double simTimeMs) {
+	double into = minutesIntoDay(simTimeMs);
+	if (into >= REGULAR_OPEN_MINUTES) { return 1.0; }
+	return into / PREMARKET_MINUTES;
+}
+
 // ---- Order Expiry Operations ----
 
 /* Check whether resting orders expire when the given session closes

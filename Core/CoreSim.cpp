@@ -43,9 +43,30 @@ void CoreSim::run(SimClock& clock) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
 
+		// A quiet market is not a finished one. With nobody taking part, let the
+		// clock run on until a sweep or session change brings traders back.
 		if (this->eventCallQueue.empty()) {
-			this->isRunning = false;
-			break;
+			if (this->OB.agents.empty()) {
+				this->isRunning = false;
+				break;
+			}
+
+			double advanceTo = (std::min)(this->nextParticipationSweepMs, this->nextBoundaryMs);
+			if (advanceTo <= clock.simTimeMs) {
+				advanceTo = clock.simTimeMs + MarketCalendar::minutesToMs(PARTICIPATION_SWEEP_MINUTES);
+			}
+
+			// Pace the jump against the wall clock the same way an event would be
+			double quietTarget = clock.simTargetMs();
+			if (advanceTo > quietTarget) {
+				double sleepMs = (advanceTo - quietTarget) / clock.speedMultiplier.load();
+				std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(sleepMs));
+			}
+
+			clock.simTimeMs = advanceTo;
+			this->processSessionBoundaries(advanceTo, clock);
+			this->sweepParticipation(advanceTo);
+			continue;
 		}
 
 		// Cross any session boundaries the next event would jump over, before it fires.
@@ -53,6 +74,11 @@ void CoreSim::run(SimClock& clock) {
 		double nextCallTime = this->eventCallQueue.top().callTime;
 		if (nextCallTime >= this->nextBoundaryMs) {
 			if (this->processSessionBoundaries(nextCallTime, clock)) { continue; }
+		}
+
+		// Refresh who is in the market, participation drifts continuously off hours
+		if (nextCallTime >= this->nextParticipationSweepMs) {
+			this->sweepParticipation(nextCallTime);
 		}
 
 		const EventCall& nextEventCall = this->eventCallQueue.top();
@@ -75,7 +101,12 @@ void CoreSim::run(SimClock& clock) {
 
 		// Process Event
 		this->eventCallQueue.pop();
+		agent->hasPendingEvent = false;
 		clock.simTimeMs = nextEventCall.callTime;
+
+		// Agent has stepped out of the market, drop it until a sweep brings it back
+		if (!agent->isParticipating(this->OB.session, clock.simTimeMs)) { continue; }
+
 		agent->actRandom();
 		this->scheduleNextEventCall(agent, clock.simTimeMs);
 		this->drainWakeQueue(clock.simTimeMs);
@@ -286,10 +317,21 @@ bool CoreSim::pumpBackDataEvents(double targetMs, SimClock& clock, long long& ev
 
 	while (clock.simTimeMs < targetMs) {
 		if (this->eventCallQueue.empty()) {
-			// Should not happen, every agent is rescheduled after acting. Reseed
-			// rather than spin, and give up if there is nobody left to act.
 			if (this->OB.agents.empty()) { return true; }
-			for (const auto& kv : this->OB.agents) { this->scheduleNextEventCall(kv.second, clock.simTimeMs); }
+
+			// Nobody is in the market right now, which is a legitimate state off
+			// hours. Let time pass until a sweep or a session change brings
+			// participants back rather than stalling or ending the run.
+			double advanceTo = (std::min)(this->nextParticipationSweepMs, this->nextBoundaryMs);
+			if (advanceTo <= clock.simTimeMs) {
+				advanceTo = clock.simTimeMs + MarketCalendar::minutesToMs(PARTICIPATION_SWEEP_MINUTES);
+			}
+			if (advanceTo >= targetMs) { return true; }
+
+			clock.simTimeMs = advanceTo;
+			this->processSessionBoundaries(advanceTo, clock);
+			this->sweepParticipation(advanceTo);
+			continue;
 		}
 
 		// Read the call time before touching the queue, a skip rebuilds it underneath us
@@ -303,6 +345,11 @@ bool CoreSim::pumpBackDataEvents(double targetMs, SimClock& clock, long long& ev
 			if (this->processSessionBoundaries(nextCallTime, clock)) { continue; }
 		}
 
+		// Refresh who is in the market, participation drifts continuously off hours
+		if (nextCallTime >= this->nextParticipationSweepMs) {
+			this->sweepParticipation(nextCallTime);
+		}
+
 		const EventCall& nextEventCall = this->eventCallQueue.top();
 		std::shared_ptr<Agent> agent = this->OB.agents[nextEventCall.agentId];
 
@@ -313,7 +360,12 @@ bool CoreSim::pumpBackDataEvents(double targetMs, SimClock& clock, long long& ev
 		}
 
 		this->eventCallQueue.pop();
+		agent->hasPendingEvent = false;
 		clock.simTimeMs = nextCallTime;
+
+		// Agent has stepped out of the market, drop it until a sweep brings it back
+		if (!agent->isParticipating(this->OB.session, clock.simTimeMs)) { continue; }
+
 		agent->actRandom();
 		this->scheduleNextEventCall(agent, clock.simTimeMs);
 		this->drainWakeQueue(clock.simTimeMs);
@@ -344,8 +396,11 @@ void CoreSim::runBackData(SimClock& clock) {
 	this->backDataExtraDays = 0;
 	this->backDataTargetMs = liveStartMs;
 	this->backDataRunning.store(true);
+	this->nextParticipationSweepMs = 0.0;
 
-	for (const auto& kv : this->OB.agents) { this->scheduleNextEventCall(kv.second, 0.0); }
+	// Seeds the queue with whoever is actually trading at the premarket open
+	for (const auto& kv : this->OB.agents) { kv.second->hasPendingEvent = false; }
+	this->sweepParticipation(0.0);
 
 	long long eventsProcessed = 0;
 	auto wallStart = std::chrono::steady_clock::now();
@@ -457,6 +512,9 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 		}
 
 		this->nextBoundaryMs = MarketCalendar::nextBoundaryMs(boundaryMs);
+
+		// The population changes shape at every session change
+		this->sweepParticipation(boundaryMs);
 	}
 
 	return queueRebuilt;
@@ -470,10 +528,12 @@ void CoreSim::skipToTime(double resumeAtMs, SimClock& clock) {
 	std::swap(this->eventCallQueue, emptyQueue);
 	this->OB.wakeQueue.clear(); // wakes are meaningless across a jump, everyone is rescheduled
 
-	// Every agent gets exactly one pending event again, scheduled from the resume point
-	for (const auto& kv : this->OB.agents) {
-		this->scheduleNextEventCall(kv.second, resumeAtMs);
-	}
+	// The queue was emptied, so nobody holds a live event any more
+	for (const auto& kv : this->OB.agents) { kv.second->hasPendingEvent = false; }
+
+	// Only agents taking part in the session we land in get scheduled
+	this->OB.session = MarketCalendar::sessionAt(resumeAtMs);
+	this->sweepParticipation(resumeAtMs);
 }
 
 // ---- Event Functions ----
@@ -493,8 +553,28 @@ void CoreSim::scheduleNextEventCall(std::shared_ptr<Agent> agent, double simTime
 	double nextEventCallTime = simTime + agent->reactionTime;
 
 	agent->eventGeneration++;
+	agent->hasPendingEvent = true;
 	EventCall ec = EventCall(nextEventCallTime, agent->id, agent->eventGeneration);
 	this->eventCallQueue.push(ec);
+}
+void CoreSim::sweepParticipation(double simTimeMs) {
+	for (const auto& kv : this->OB.agents) {
+		std::shared_ptr<Agent> agent = kv.second;
+		bool participating = agent->isParticipating(this->OB.session, simTimeMs);
+
+		// Bankruptcy is a lifecycle state, never overwrite it with a session state
+		if (agent->status != AgentStatus::BANKRUPT) {
+			agent->status = participating ? AgentStatus::ACTIVE : AgentStatus::INACTIVE;
+		}
+
+		// Agents that have just joined need an event, ones that dropped out simply
+		// stop being rescheduled and fall out of the queue on their own
+		if (participating && !agent->hasPendingEvent) {
+			this->scheduleNextEventCall(agent, simTimeMs);
+		}
+	}
+
+	this->nextParticipationSweepMs = simTimeMs + MarketCalendar::minutesToMs(PARTICIPATION_SWEEP_MINUTES);
 }
 void CoreSim::drainWakeQueue(double simTimeMs) {
 	if (this->OB.wakeQueue.empty()) { return; }
@@ -505,12 +585,16 @@ void CoreSim::drainWakeQueue(double simTimeMs) {
 
 		std::shared_ptr<Agent> agent = found->second;
 
+		// A dormant agent stays dormant, it is not in the market right now
+		if (!agent->isParticipating(this->OB.session, simTimeMs)) { continue; }
+
 		// Act on the fill at the agent's fast floor rather than its idle cadence.
 		// Bumping the generation leaves the previously scheduled call stale.
 		double jitter = randomDouble(0.0, agent->reactionTimeFloor);
 		agent->reactionTime = agent->reactionTimeFloor + jitter;
 
 		agent->eventGeneration++;
+		agent->hasPendingEvent = true;
 		this->eventCallQueue.push(EventCall(simTimeMs + agent->reactionTime, agent->id, agent->eventGeneration));
 	}
 

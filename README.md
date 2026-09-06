@@ -62,18 +62,43 @@ _Why not use Monte-Carlo Simulations?_
 - <sup>_[x] = Implemented, [ ] = Planned or In-Progress_</sup>
 
 
-- [x] Matching engine: price-time priority, market/limit orders, full escrow system, self-trade protections
+- [x] Matching engine: price-time priority (FIFO), market/limit orders, marketable limits, full escrow system, self-trade protections
 - [x] Order Book: `std::set` based bid/ask queues, O(log N) operations, snapshot api
 - [x] Agents: NOISE, MOMENTUM, ALGO, INFORMED subtypes with differentiated reaction times and parameters (All semi-random for now)
 - [x] Simulation Clock: Pause, step-forward, speed-adjustable, deterministic via `SimClock` timestamps
 - [x] Terminal UI: Live candlestick chart, orderbook, agent table, event log, reset dialog using [FTXUI](https://github.com/ArthurSonzogni/FTXUI/tree/main)
+- [x] Extended hours phases: premarket, regular, afterhours and overnight sessions on a real market calendar, with session-driven order rules and expiry
+- [x] Back data initialization: headless, time-bounded warm-up that builds real price history and a populated book before the live sim opens
 - [ ] Robust UI: A more refined UI for better UX and data displays, possibly web-based or using python
 - [ ] Agent population composition refinement
-- [ ] Extended hours phases
 - [ ] Agent lifecycles and exit conditions
+- [ ] Temporary agents that enter and leave the market for additional volume
 - [ ] User order placements in UI
 - [ ] API for order placements (for algos/AI)
 - [ ] Technical indicators maybe ablility for custom indicators?
+
+### Market Sessions
+The simulation runs on a real US equity calendar. `t = 0` is 04:00 on day 0, and a day is 1440 clock minutes of which 960 are tradeable.
+
+| Session | Clock | Length | Notes |
+| :--- | :--- | :--- | :--- |
+| PREMARKET | 04:00 - 09:30 | 330 min | No market orders. Rolls into REGULAR without expiring orders |
+| REGULAR | 09:30 - 16:00 | 390 min | Full participation, market orders allowed |
+| AFTERHOURS | 16:00 - 20:00 | 240 min | No market orders. Resting orders expire at the close |
+| OVERNIGHT | 20:00 - 04:00 | 480 min | Only simulated occasionally, otherwise the clock jumps to the next premarket open |
+
+Session drives three behaviors:
+- **Order types.** Market orders are restricted to regular hours, and are never used by institutions or algos, which cross with marketable limit orders instead.
+- **Order expiry.** Resting orders carry an expiry and are swept at the regular, afterhours and overnight closes. Premarket is not an expiring boundary, so a day order placed premarket lives through the regular session.
+- **Participation.** Outside regular hours the market has *fewer participants*, not slower ones. Retail participation decays continuously from the afterhours open through the overnight, then builds back through premarket, while institutional desks stay at a flat rate. Extended hours settle at roughly 5% of daily volume.
+
+### Back Data Initialization
+Before the live simulation opens, OBSim runs the real engine headless and unthrottled across a configurable span of prior sessions, so the market you are handed already has price history, a populated order book, and agent portfolios that evolved through actual trading.
+
+- Bounded by **simulated time**, never by fill count, so it always terminates even if no trade occurs
+- Runs every session in order, including the overnight decision, and hands off exactly at the open of the session you choose
+- Optional minimum liquidity target extends the run a whole day at a time so the handoff still lands on the same session open
+- Progress overlay with a cancel key, since a long span can take a moment
 
 ## Performance
 These are slightly outdated since this was done on the inital MVP, pre-TUI, but performance is comparable, if not better now.
@@ -169,6 +194,7 @@ These are listed at the bottom left of the TUI as well.
 - `→/+` = Speed up time
 - `T` = Change tick aggregation
 - `A/D` = Scroll through agent pages
+- `ESC` = Cancel an in-progress back data build and return to the reset dialog
 
 ## Usage / Configuration
 The simulations use seeds to ensure each run with the same seed and **starting parameters** produce the same simulation runs every time.
@@ -182,16 +208,33 @@ There are two ways to do this, one in code, the other in the TUI.
     CoreSim sim;
     sim.setParameters(
 	    1,			// Seed
-	    1,		// Initialization Ticks
+	    1,			// Back Data (whole days)
+	    Session::REGULAR,	// Live Start Session, the live sim opens here
+	    0,			// Min Liquidity, 0 disables the check
 	    100,		// Agent Start Count
-	    250'000,	// Share Float
-	    1.00		// Start Price
+	    250'000,		// Share Float
+	    1.00		// Start Price, the price at the START of the back data
     );
     ```
 2. In the TUI:
 
     Press `R`, a dialog box will pop up, enter your desired start-up parameters, click enter.
     - Be careful with the price option as it can sometimes cause the simulation to freeze and crash. Stick to just _**two decimal places**_ for now.
+    - `Live Start` is cycled with `←`/`→` rather than typed.
+    - The dialog shows the resulting span live, for example `1290 active min (1770 total)`.
+
+#### Parameters
+| Parameter | Meaning |
+| :--- | :--- |
+| Seed | Fixes the run. Same seed **and** same parameters reproduce a run exactly |
+| Back Data (days) | Whole prior days simulated headless before the live sim opens. `0` opens immediately |
+| Live Start Session | Which session the live simulation opens in, at that session's open |
+| Min Liquidity | Minimum resting orders per side required at handoff. `0` disables it |
+| Agent Start Count | Number of agents created at startup |
+| Share Float | Total shares dispersed among agents |
+| Start Price | Price at the **start of the back data**. The live opening price emerges from trading |
+
+Note that back data consumes random draws, so a run is identified by the whole parameter set rather than the seed alone.
 
 ## Project Structure
 This project is split into two distinct sections: `Core` and `App` in order to keep related functions close together.
@@ -208,6 +251,10 @@ This is responsible for the user interface. It is where data from the `Core` is 
 - Agent composition/distribution needs fine-tuning
 - Price selection may need fine-tuning
 - There is no built-in way for a user to easily place orders themselves
+- Extended hours participation rates and the retail decay curve are hand-tuned starting values, not calibrated against real market data
+- Afterhours currently trades slightly faster per minute than premarket, a consequence of the decay starting at full rate while premarket builds from the overnight floor
+- Trade volume scales with agent count, so small populations produce a thin market. A few hundred agents or more is recommended for realistic behavior
+- `tickHistory` grows unbounded across long back data spans, and the chart re-aggregates the whole history when the timeframe changes
 
 ## Contact
 Check out my [LinkedIn](https://www.linkedin.com/in/sean-coleman-974652270) or start a [discussion](https://github.com/Namelocms/OBSim/discussions) in this repo!

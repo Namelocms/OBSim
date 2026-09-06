@@ -74,6 +74,12 @@ inline constexpr double BACK_DATA_MAX_WALL_SECONDS = 900.0;
 inline constexpr int BACK_DATA_MAX_EXTRA_DAYS = 3;
 /* How often the back-data loop checks caps, cancellation, and reports progress */
 inline constexpr long long BACK_DATA_CHECK_INTERVAL = 4096;
+/* Simulated minutes between participation sweeps
+*
+* Extended hours participation changes continuously, so dormant agents are
+* re-checked on this cadence rather than only at session boundaries.
+*/
+inline constexpr double PARTICIPATION_SWEEP_MINUTES = 15.0;
 
 /* Snapshot of an in-progress back-data run, pushed to the UI on an interval */
 struct BackDataProgress {
@@ -158,6 +164,15 @@ public:
     void scheduleNextEventCall(std::shared_ptr<Agent> agent, double simTimeMs);
     /* Re-schedule every agent in OB.wakeQueue to act immediately, invalidating their pending event */
     void drainWakeQueue(double simTimeMs);
+    /* Refresh who is taking part right now and schedule anyone who has just joined
+    *
+    * Agents that drop out are not rescheduled, so they fall out of the queue on
+    * their own. Agents that rejoin get a fresh event from simTimeMs.
+    */
+    void sweepParticipation(double simTimeMs);
+
+    /* Sim time of the next participation sweep */
+    double nextParticipationSweepMs = 0.0;
 
     // ---- Utility Functions ----
 

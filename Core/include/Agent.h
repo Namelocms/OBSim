@@ -8,6 +8,7 @@ enum class OrderAction;
 enum class AgentStatus;
 enum class AgentType;
 enum class AgentSubType;
+enum class Session;
 class OrderBook;
 class MatchingEngine;
 class Order;
@@ -34,6 +35,28 @@ inline constexpr double AGGRESSION_ALGO = 0.02;
 *  of the agent's normal price variance. This is the slippage cap. */
 inline constexpr double MARKETABLE_SLIP_SCALE = 0.50;
 
+/* ---- Extended hours participation ----
+*
+* Outside the regular session the market does not merely slow down, it has far
+* fewer people in it. Each agent holds a fixed participation threshold, and takes
+* part only while its kind's participation rate for the current session sits above
+* that threshold. The threshold is drawn once at creation, so the ramp is smooth
+* and reproducible and the same agents are the reliable extended hours traders
+* every day rather than a fresh random draw each session.
+*
+* Institutional desks cover extended hours consistently, so their rate is flat.
+* Retail tapers away after the close, bottoms out overnight, and builds back
+* through premarket, which is what makes premarket institution and news driven.
+*/
+inline constexpr double EXT_PARTICIPATION_INST_ALGO = 0.40;
+inline constexpr double EXT_PARTICIPATION_INST_INFORMED = 0.35;
+inline constexpr double EXT_PARTICIPATION_RETAIL_ALGO = 0.20;
+inline constexpr double EXT_PARTICIPATION_RETAIL_INFORMED = 0.15;
+inline constexpr double EXT_PARTICIPATION_RETAIL_MOMENTUM = 0.05;
+inline constexpr double EXT_PARTICIPATION_RETAIL_NOISE = 0.03;
+/* Share of its base rate retail retains at the deepest point of the overnight */
+inline constexpr double RETAIL_EXTENDED_FLOOR_FACTOR = 0.20;
+
 class Agent : public std::enable_shared_from_this<Agent> {
 public:
 	/* Agent's unique ID */
@@ -58,6 +81,14 @@ public:
 	* pushes a newer event and bumps this counter to invalidate the old one.
 	*/
 	unsigned long long eventGeneration = 0;
+	/* True while this agent has a live event sitting in the queue */
+	bool hasPendingEvent = false;
+	/* Fixed draw in [0,1) deciding how committed this agent is to trading off hours
+	*
+	* Compared against its kind's participation rate for the current session, so
+	* the population thins and refills smoothly without re-rolling anyone.
+	*/
+	double participationThreshold;
 	/* Agent's buying power */
 	double cash;
 	/* Agent's market sentiment */
@@ -160,6 +191,15 @@ public:
 	double getBetaPrice(double currentPrice, OrderAction side, double a = 2.0, double b = 5.0, double epsilon = 0.0001);
 	/* Roll whether this order should be priced to cross the spread, weighted by subtype */
 	bool rollAggressive();
+	/* Get the share of this agent's kind taking part in the given session at the given time
+	*
+	* 1.0 during REGULAR, everyone trades the main session. Outside it, the kind's
+	* base rate, decayed for retail across afterhours and overnight and grown back
+	* through premarket.
+	*/
+	double participationRate(Session session, double simTimeMs) const;
+	/* Check whether this agent is taking part right now */
+	bool isParticipating(Session session, double simTimeMs) const;
 	/* Get a marketable limit price, referenced to the opposite touch rather than the last trade
 	*
 	* Returns a price at or through the best opposite order, so the order executes
