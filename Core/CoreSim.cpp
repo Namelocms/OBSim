@@ -22,6 +22,8 @@ void CoreSim::run(SimClock& clock) {
 	this->liveTransientCount = 0;
 	this->transientSlotsAllocated = 0;
 	this->transientArrivals = 0;
+	this->lastArrivalCheckMs = 0.0;
+	this->residentCount = 0;
 
 	//std::cout << "Initializing Agents..." << std::endl;
 	this->initAgents(this->parameters.agentStartCount);
@@ -168,6 +170,10 @@ void CoreSim::run(SimClock& clock) {
 // ---- Simulation Initialization Functions ----
 
 void CoreSim::initAgents(unsigned short _agentStartCount) {
+	// Everything this function creates is resident. The arrival rate scales against this
+	// count, so transient agents never breed more transient agents.
+	this->residentCount = _agentStartCount;
+
 	// track current share count against float
 	unsigned int dispersedShares_I = unsigned int(this->OB.shareFloat * 0.70);
 	unsigned int dispersedShares_R = this->OB.shareFloat - dispersedShares_I;
@@ -420,6 +426,7 @@ void CoreSim::runBackData(SimClock& clock) {
 	this->backDataTargetMs = liveStartMs;
 	this->backDataRunning.store(true);
 	this->nextParticipationSweepMs = 0.0;
+	this->lastArrivalCheckMs = 0.0;
 
 	// Seeds the queue with whoever is actually trading at the premarket open
 	for (const auto& kv : this->OB.agents) { if (kv.second != nullptr) { kv.second->hasPendingEvent = false; } }
@@ -558,6 +565,11 @@ void CoreSim::skipToTime(double resumeAtMs, SimClock& clock) {
 	// The queue was emptied, so nobody holds a live event any more
 	for (const auto& kv : this->OB.agents) { if (kv.second != nullptr) { kv.second->hasPendingEvent = false; } }
 
+	// The clock jumped over a window in which no market ran, so no arrivals happened in it
+	// either. Without this the whole skipped span's worth would be drawn and dumped at the
+	// far side, landing an entire overnight's arrivals on the premarket open at once.
+	this->lastArrivalCheckMs = resumeAtMs;
+
 	// Only agents taking part in the session we land in get scheduled
 	this->OB.session = MarketCalendar::sessionAt(resumeAtMs);
 	this->sweepParticipation(resumeAtMs);
@@ -609,9 +621,73 @@ void CoreSim::sweepParticipation(double simTimeMs) {
 		}
 	}
 
+	// Admit this interval's arrivals after the existing population has been refreshed, so
+	// a brand new arrival is not immediately re-examined by the loop above
+	this->processTransientArrivals(simTimeMs);
+
 	this->nextParticipationSweepMs = simTimeMs + MarketCalendar::minutesToMs(PARTICIPATION_SWEEP_MINUTES);
 }
 // ---- Transient Agent Functions ----
+
+/* Share of the REGULAR arrival rate this session sees */
+static double transientSessionFactor(Session session) {
+	switch (session) {
+	case Session::PREMARKET:  return TRANSIENT_SESSION_FACTOR_PREMARKET;
+	case Session::REGULAR:    return TRANSIENT_SESSION_FACTOR_REGULAR;
+	case Session::AFTERHOURS: return TRANSIENT_SESSION_FACTOR_AFTERHOURS;
+	case Session::OVERNIGHT:  return TRANSIENT_SESSION_FACTOR_OVERNIGHT;
+	default:                  return 0.0;   // CLOSED, nobody arrives
+	}
+}
+
+int CoreSim::transientPopulationCap() const {
+	// Keep the ceiling clear of the configured target, so raising transientFraction cannot
+	// quietly start clipping arrivals instead of changing the population
+	double capFraction = (std::max)(TRANSIENT_MAX_POPULATION_FRACTION,
+		this->parameters.transientFraction * TRANSIENT_CAP_HEADROOM);
+	return int(capFraction * double(this->residentCount));
+}
+void CoreSim::processTransientArrivals(double simTimeMs) {
+	// The disabled path must consume no RNG at all, so that a run with transient agents
+	// off reproduces a pre-feature run exactly. Every early return here is before a draw.
+	if (this->parameters.transientFraction <= 0.0) {
+		this->lastArrivalCheckMs = simTimeMs;
+		return;
+	}
+	if (this->residentCount <= 0) {
+		this->lastArrivalCheckMs = simTimeMs;
+		return;
+	}
+
+	double dtMs = simTimeMs - this->lastArrivalCheckMs;
+	this->lastArrivalCheckMs = simTimeMs;
+	if (dtMs <= 0.0) { return; }
+
+	// Little's law: to hold `fraction` of the resident count in the market at once, given a
+	// mean stay of meanTenureHours, arrivals must run at population / meanTenureHours.
+	double meanTenureHours = TRANSIENT_MEAN_TENURE_MINUTES / 60.0;
+	double targetPopulation = this->parameters.transientFraction * double(this->residentCount);
+	double arrivalsPerHour = (targetPopulation / meanTenureHours) * transientSessionFactor(this->OB.session);
+	if (arrivalsPerHour <= 0.0) { return; }
+
+	double dtHours = MarketCalendar::msToMinutes(dtMs) / 60.0;
+	unsigned int arrivals = samplePoisson(arrivalsPerHour * dtHours);
+	if (arrivals == 0) { return; }
+
+	// Excess is dropped rather than queued. The cap is a safety limit, and carrying a
+	// backlog forward would turn one capped interval into a burst later.
+	int cap = this->transientPopulationCap();
+	for (unsigned int i = 0; i < arrivals; ++i) {
+		if (this->liveTransientCount >= cap) { break; }
+
+		std::shared_ptr<Agent> agent = this->acquireTransientSlot(simTimeMs);
+		if (agent == nullptr) { break; }
+
+		++this->liveTransientCount;
+		++this->transientArrivals;
+		this->scheduleNextEventCall(agent, simTimeMs);
+	}
+}
 
 bool CoreSim::rollTransientPersonality(std::shared_ptr<Agent> agent, double simTimeMs) {
 	if (agent == nullptr) { return false; }

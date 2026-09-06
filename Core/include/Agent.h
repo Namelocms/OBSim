@@ -126,6 +126,50 @@ inline constexpr double TRANSIENT_TENURE_HALFLIFE_SPREAD = 0.50;
 inline constexpr double TRANSIENT_ARRIVAL_SENTIMENT_MIN = 0.10;
 inline constexpr double TRANSIENT_ARRIVAL_SENTIMENT_MAX = 0.90;
 
+/* Mean undisturbed tenure, the commitment window plus the exponential's mean
+*
+* Per-agent half-lives are drawn symmetrically about TRANSIENT_TENURE_HALFLIFE_MINUTES, so
+* the population mean is that value, and Exponential(halfLife) has mean halfLife / ln 2.
+*
+* "Undisturbed" matters: adversity shortens real tenures, so the realised concurrent
+* population sits BELOW the target this feeds. The arrival rate is not corrected for that,
+* because the shortfall is the feature working.
+*/
+inline constexpr double TRANSIENT_MEAN_TENURE_MINUTES = TRANSIENT_MIN_TENURE_MINUTES
+	+ (TRANSIENT_TENURE_HALFLIFE_MINUTES / 0.693147180559945309417);
+
+/* ---- Arrivals ----
+*
+* Arrival rate is expressed as a target STEADY-STATE CONCURRENCY, as a share of the
+* resident population, rather than as an absolute rate. Little's law then gives the rate:
+*
+*     arrivalsPerHour = (fraction * residents / meanTenureHours) * sessionFactor
+*
+* Stating it this way means the knob is the number a person actually reasons about ("how
+* much of the crowd is transient"), and transient activity stays proportional as
+* agentStartCount changes instead of needing retuning at every population size.
+*/
+inline constexpr double TRANSIENT_DEFAULT_FRACTION = 0.08;
+/* Hard ceiling on LIVE transient agents, as a share of residents. Pooled slots do not count.
+*
+* Defense in depth like the back-data caps, not a working limit: steady state sits near
+* TRANSIENT_DEFAULT_FRACTION, well under this. The headroom multiple keeps the ceiling
+* clear of the target if the fraction is ever raised, so it cannot silently start binding.
+*/
+inline constexpr double TRANSIENT_MAX_POPULATION_FRACTION = 0.25;
+inline constexpr double TRANSIENT_CAP_HEADROOM = 3.0;
+
+/* Per-session multipliers on the arrival rate.
+*
+* Explicit rather than reusing the retail participation curve. That curve bottoms out near
+* 0.006, which would put premarket arrivals at effectively zero -- but premarket is exactly
+* when news driven day traders turn up. Fewer people are around off hours, not none.
+*/
+inline constexpr double TRANSIENT_SESSION_FACTOR_PREMARKET = 0.10;
+inline constexpr double TRANSIENT_SESSION_FACTOR_REGULAR = 1.00;
+inline constexpr double TRANSIENT_SESSION_FACTOR_AFTERHOURS = 0.08;
+inline constexpr double TRANSIENT_SESSION_FACTOR_OVERNIGHT = 0.01;
+
 class Agent : public std::enable_shared_from_this<Agent> {
 public:
 	/* Agent's unique ID */

@@ -215,6 +215,23 @@ public:
     * out or a slot could not be prepared.
     */
     std::shared_ptr<Agent> acquireTransientSlot(double simTimeMs);
+    /* Draw and admit this interval's transient arrivals, as of simTimeMs
+    *
+    * Driven from sweepParticipation rather than from its own timer, so it inherits a
+    * cadence that already runs in both loops and at every session boundary. The draw is
+    * Poisson over the sim time elapsed since the last check, so an irregular sweep cadence
+    * does not distort the rate.
+    *
+    * Returns immediately, touching no RNG, when transientFraction is 0.
+    */
+    void processTransientArrivals(double simTimeMs);
+    /* Ceiling on live transient agents for the current resident population */
+    int transientPopulationCap() const;
+
+    /* Non-transient agents, the denominator the arrival rate scales against */
+    int residentCount = 0;
+    /* Sim time arrivals were last drawn for, the Poisson interval runs from here */
+    double lastArrivalCheckMs = 0.0;
 
     /* Ids of pooled transient slots waiting to be rerolled
     *
