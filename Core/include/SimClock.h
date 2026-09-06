@@ -24,12 +24,24 @@ public:
         return wallElapsedMs() * speedMultiplier.load();
     }
  
-    void setSpeed(double multiplier) {
-        // Recalibrate wall start so speed change doesn't cause a catch-up burst
+    /* Rebase the wall clock so simTargetMs() lines back up with simTimeMs
+    *
+    * simTargetMs() is measured from wallStart, so ANY jump in sim time must rebase
+    * it. Skipping this leaves the pacing logic believing the sim is far ahead of
+    * schedule, and it sleeps out the whole gap, which looks like a freeze.
+    */
+    void rebaseWallClock() {
         wallStart = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 std::chrono::duration<double, std::milli>(simTimeMs / speedMultiplier.load())
             );
+    }
+
+    void setSpeed(double multiplier) {
+        // Store first, then rebase against the NEW speed. Rebasing against the old
+        // one leaves wallElapsed scaled wrong and causes the catch-up burst this
+        // is meant to avoid.
         speedMultiplier.store(multiplier);
+        rebaseWallClock();
     }
  
     void pause() {
@@ -38,9 +50,7 @@ public:
  
     void resume() {
         // Recalibrate so paused wall time doesn't count
-        wallStart = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                std::chrono::duration<double, std::milli>(simTimeMs / speedMultiplier.load())
-            );
+        rebaseWallClock();
         paused.store(false);
     }
  

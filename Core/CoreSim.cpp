@@ -35,6 +35,7 @@ void CoreSim::run(SimClock& clock) {
 	this->isRunning = true;
 	this->shouldGetSnapshot = false;
 	long long lastTick = 0;
+	int quietSlices = 0;
 
 	while (this->isRunning) {
 		
@@ -51,21 +52,24 @@ void CoreSim::run(SimClock& clock) {
 				break;
 			}
 
-			double advanceTo = (std::min)(this->nextParticipationSweepMs, this->nextBoundaryMs);
-			if (advanceTo <= clock.simTimeMs) {
-				advanceTo = clock.simTimeMs + MarketCalendar::minutesToMs(PARTICIPATION_SWEEP_MINUTES);
-			}
+			// Follow the wall clock in short slices rather than jumping ahead and
+			// sleeping out the gap, so pause, speed and quit stay responsive while
+			// a dead session passes
+			std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(PACING_SLICE_MS));
 
-			// Pace the jump against the wall clock the same way an event would be
 			double quietTarget = clock.simTargetMs();
-			if (advanceTo > quietTarget) {
-				double sleepMs = (advanceTo - quietTarget) / clock.speedMultiplier.load();
-				std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(sleepMs));
+			if (quietTarget > clock.simTimeMs) { clock.simTimeMs = quietTarget; }
+
+			this->processSessionBoundaries(clock.simTimeMs, clock);
+			if (clock.simTimeMs >= this->nextParticipationSweepMs) {
+				this->sweepParticipation(clock.simTimeMs);
 			}
 
-			clock.simTimeMs = advanceTo;
-			this->processSessionBoundaries(advanceTo, clock);
-			this->sweepParticipation(advanceTo);
+			// Keep the clock and session readouts moving even with no trades
+			if (++quietSlices >= QUIET_TICKS_PER_REFRESH) {
+				quietSlices = 0;
+				if (this->onTick) { this->onTick(); }
+			}
 			continue;
 		}
 
@@ -91,13 +95,20 @@ void CoreSim::run(SimClock& clock) {
 			continue;
 		}
 
-		// Pace sim with wall clock, sleep if sim is ahead
-		double simTarget = clock.simTargetMs();
-		if (nextEventCall.callTime > simTarget) {
-			if (!this->isRunning) { break; }
+		// Pace sim with wall clock, sleep if sim is ahead. Sliced rather than one
+		// long block so a sparse session cannot lock out pause, speed or quit.
+		bool waitInterrupted = false;
+		while (this->isRunning) {
+			double simTarget = clock.simTargetMs();
+			if (nextEventCall.callTime <= simTarget) { break; }
+			if (clock.paused.load()) { waitInterrupted = true; break; }
+
 			double sleepMs = (nextEventCall.callTime - simTarget) / clock.speedMultiplier.load();
+			if (sleepMs > PACING_SLICE_MS) { sleepMs = PACING_SLICE_MS; }
 			std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(sleepMs));
 		}
+		// Re-enter the loop so the pause handler runs and the queue is re-read
+		if (waitInterrupted || !this->isRunning) { continue; }
 
 		// Process Event
 		this->eventCallQueue.pop();
@@ -521,6 +532,10 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 }
 void CoreSim::skipToTime(double resumeAtMs, SimClock& clock) {
 	clock.simTimeMs = resumeAtMs;
+
+	// The clock just jumped, in the live loop by as much as a whole overnight.
+	// Without rebasing, pacing sees the sim as hours ahead and sleeps out the gap.
+	clock.rebaseWallClock();
 
 	// Drop events left sitting inside the skipped window, they would otherwise
 	// fire immediately and out of order on the far side of the jump

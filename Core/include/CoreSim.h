@@ -80,6 +80,14 @@ inline constexpr long long BACK_DATA_CHECK_INTERVAL = 4096;
 * re-checked on this cadence rather than only at session boundaries.
 */
 inline constexpr double PARTICIPATION_SWEEP_MINUTES = 15.0;
+/* Longest single wall-clock sleep the live loop will take, in real milliseconds
+*
+* Pacing waits are sliced to this so a long wait, a thin session or an overnight
+* skip can never lock out pause, speed changes or quit.
+*/
+inline constexpr double PACING_SLICE_MS = 25.0;
+/* Quiet-market slices between UI refreshes, so the clock keeps moving with no trades */
+inline constexpr int QUIET_TICKS_PER_REFRESH = 8;
 
 /* Snapshot of an in-progress back-data run, pushed to the UI on an interval */
 struct BackDataProgress {
