@@ -78,6 +78,8 @@ inline constexpr long long BACK_DATA_CHECK_INTERVAL = 4096;
 struct EventCall {
     double callTime;
     std::string agentId;
+    /* Agent event generation this call was created with, stale calls are discarded on pop */
+    unsigned long long generation = 0;
 };
 
 /* Closest call time is first in queue */
@@ -136,6 +138,8 @@ public:
     // ---- Event Functions ----
 
     void scheduleNextEventCall(std::shared_ptr<Agent> agent, double simTimeMs);
+    /* Re-schedule every agent in OB.wakeQueue to act immediately, invalidating their pending event */
+    void drainWakeQueue(double simTimeMs);
 
     // ---- Utility Functions ----
 

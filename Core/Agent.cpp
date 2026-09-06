@@ -110,12 +110,16 @@ void Agent::actRandom() {
 	OrderType orderType = randomInt(0, 1) ? OrderType::MARKET : OrderType::LIMIT;
 	std::shared_ptr<Order> order;
 
+	++this->actionCount;
+
 	switch (action) {
 	case OrderAction::BID:
 		switch (orderType) {
 		case OrderType::MARKET:
 			if (this->OB.session != Session::REGULAR) { break; } // No market orders outside regular market hours
-			if (this->type == AgentType::INSTITUTION) { break; } // Testing no market orders for institutions or algos, definitly make the orderbook deeper
+			// Institutions and algos quote passively, real desks use marketable limits
+			// to cap slippage rather than sending naked market orders
+			if (this->type == AgentType::INSTITUTION || this->subType == AgentSubType::ALGO) { break; }
 			order = this->makeMarketBid();
 			this->ME.matchMarketBid(order);
 			break;
@@ -130,7 +134,7 @@ void Agent::actRandom() {
 		switch (orderType) {
 		case OrderType::MARKET:
 			if (this->OB.session != Session::REGULAR) { break; }
-			if (this->type == AgentType::INSTITUTION) { break; } // Testing no market orders for institutions or algos
+			if (this->type == AgentType::INSTITUTION || this->subType == AgentSubType::ALGO) { break; }
 			order = this->makeMarketAsk();
 			this->ME.matchMarketAsk(order);
 			break;

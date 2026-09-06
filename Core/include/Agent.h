@@ -23,6 +23,22 @@ public:
 	double reactionTimeFloor;
 	/* Agent's currently used reaction time with jitter added */
 	double reactionTime;
+	/* Reaction floor this agent backs off to after its opening action, 0 disables the backoff
+	*
+	* Passive quoting agents (ALGO) only need their fast floor to claim an early slot
+	* in the opening queue. Once they have quotes resting there is nothing to do until
+	* a fill wakes them, so leaving them on a sub-millisecond timer burns enormous
+	* amounts of compute producing HOLDs.
+	*/
+	double idleReactionTimeFloor = 0.0;
+	/* Number of actions this agent has taken, drives the opening action backoff */
+	unsigned long long actionCount = 0;
+	/* Generation of this agent's live event, anything older in the queue is stale
+	*
+	* std::priority_queue cannot remove a scheduled event, so waking an agent early
+	* pushes a newer event and bumps this counter to invalidate the old one.
+	*/
+	unsigned long long eventGeneration = 0;
 	/* Agent's buying power */
 	double cash;
 	/* Agent's market sentiment */

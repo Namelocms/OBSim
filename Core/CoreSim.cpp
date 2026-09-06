@@ -59,6 +59,12 @@ void CoreSim::run(SimClock& clock) {
 
 		std::shared_ptr<Agent> agent = this->OB.agents[nextEventCall.agentId];
 
+		// Discard calls left behind when an agent was woken early
+		if (agent == nullptr || nextEventCall.generation != agent->eventGeneration) {
+			this->eventCallQueue.pop();
+			continue;
+		}
+
 		// Pace sim with wall clock, sleep if sim is ahead
 		double simTarget = clock.simTargetMs();
 		if (nextEventCall.callTime > simTarget) {
@@ -72,6 +78,7 @@ void CoreSim::run(SimClock& clock) {
 		clock.simTimeMs = nextEventCall.callTime;
 		agent->actRandom();
 		this->scheduleNextEventCall(agent, clock.simTimeMs);
+		this->drainWakeQueue(clock.simTimeMs);
 		if (this->onLog) { this->onLog({ LogEntry::Kind::HOLD, clock.simTimeMs, agent->id }); }
 
 		// Handle step mode
@@ -237,6 +244,12 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 			//}
 		}
 		
+		// Passive quoting agents claim an early slot with their fast floor, then back
+		// off to a re-quote cadence. A fill wakes them again, so a stale quote is
+		// replaced on being hit rather than after waiting out the timer.
+		//													  1s        60s
+		if (a_subType == AgentSubType::ALGO) { agent->idleReactionTimeFloor = randomDouble(1000.0, 60'000.0); }
+
 		// Upsert Agent
 		this->OB.upsertAgent(agent);
 
@@ -274,10 +287,17 @@ bool CoreSim::pumpBackDataEvents(double targetMs, SimClock& clock, long long& ev
 		const EventCall& nextEventCall = this->eventCallQueue.top();
 		std::shared_ptr<Agent> agent = this->OB.agents[nextEventCall.agentId];
 
+		// Discard calls left behind when an agent was woken early
+		if (agent == nullptr || nextEventCall.generation != agent->eventGeneration) {
+			this->eventCallQueue.pop();
+			continue;
+		}
+
 		this->eventCallQueue.pop();
 		clock.simTimeMs = nextCallTime;
 		agent->actRandom();
 		this->scheduleNextEventCall(agent, clock.simTimeMs);
+		this->drainWakeQueue(clock.simTimeMs);
 		++eventsProcessed;
 
 		// Caps, cancellation and progress are checked on an interval, not per event
@@ -419,6 +439,7 @@ void CoreSim::skipToTime(double resumeAtMs, SimClock& clock) {
 	// fire immediately and out of order on the far side of the jump
 	std::priority_queue<EventCall, std::vector<EventCall>, CompareEventCalls> emptyQueue;
 	std::swap(this->eventCallQueue, emptyQueue);
+	this->OB.wakeQueue.clear(); // wakes are meaningless across a jump, everyone is rescheduled
 
 	// Every agent gets exactly one pending event again, scheduled from the resume point
 	for (const auto& kv : this->OB.agents) {
@@ -429,12 +450,42 @@ void CoreSim::skipToTime(double resumeAtMs, SimClock& clock) {
 // ---- Event Functions ----
 
 void CoreSim::scheduleNextEventCall(std::shared_ptr<Agent> agent, double simTime) {
-	double jitter = randomDouble(0.0, agent->reactionTimeFloor);
-	agent->reactionTime = agent->reactionTimeFloor + jitter;  // used for sentiment calculation
+	// Passive quoting agents keep their fast floor for the opening action only, so they
+	// still claim an early slot and seed the book, then back off to a re-quote cadence.
+	// Applied unconditionally after that first action rather than while at order
+	// capacity, which would spin an agent that has a free side but cannot use it.
+	// reactionTimeFloor itself is never overwritten, wakes still need the fast value.
+	double floorMs = (agent->idleReactionTimeFloor > 0.0 && agent->actionCount > 0)
+		? agent->idleReactionTimeFloor
+		: agent->reactionTimeFloor;
+
+	double jitter = randomDouble(0.0, floorMs);
+	agent->reactionTime = floorMs + jitter;  // used for sentiment calculation
 	double nextEventCallTime = simTime + agent->reactionTime;
-	
-	EventCall ec = EventCall(nextEventCallTime, agent->id);
+
+	agent->eventGeneration++;
+	EventCall ec = EventCall(nextEventCallTime, agent->id, agent->eventGeneration);
 	this->eventCallQueue.push(ec);
+}
+void CoreSim::drainWakeQueue(double simTimeMs) {
+	if (this->OB.wakeQueue.empty()) { return; }
+
+	for (const std::string& agentId : this->OB.wakeQueue) {
+		auto found = this->OB.agents.find(agentId);
+		if (found == this->OB.agents.end()) { continue; }
+
+		std::shared_ptr<Agent> agent = found->second;
+
+		// Act on the fill at the agent's fast floor rather than its idle cadence.
+		// Bumping the generation leaves the previously scheduled call stale.
+		double jitter = randomDouble(0.0, agent->reactionTimeFloor);
+		agent->reactionTime = agent->reactionTimeFloor + jitter;
+
+		agent->eventGeneration++;
+		this->eventCallQueue.push(EventCall(simTimeMs + agent->reactionTime, agent->id, agent->eventGeneration));
+	}
+
+	this->OB.wakeQueue.clear();
 }
 
 // ---- Utility Functions ----

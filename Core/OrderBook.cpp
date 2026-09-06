@@ -66,6 +66,12 @@ void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 
 	std::shared_ptr<Agent> agent = this->agents[order->agentId];
 
+	// A backed off quoting agent needs to act on being hit, on partial fills too,
+	// rather than sitting idle until its next scheduled event
+	if (volFilled > 0 && agent != nullptr && agent->idleReactionTimeFloor > 0.0) {
+		this->wakeQueue.push_back(order->agentId);
+	}
+
 	order->volume -= volFilled;
 	if (order->volume == 0) {
 		order->status = OrderStatus::CLOSED;
@@ -161,6 +167,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->shareFloat = (shareFloat == 0) ? randomInt(100'000, 100'000'000) : shareFloat;
 	this->tickHistory.clear();
 	this->tickCount = 0;
+	this->wakeQueue.clear();
 	//this->orderHistory.clear();
 	this->bidQueue.clear();
 	this->askQueue.clear();

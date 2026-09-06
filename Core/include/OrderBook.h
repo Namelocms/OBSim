@@ -71,6 +71,12 @@ public:
 	//std::unordered_map<std::string, std::shared_ptr<Order>> orderHistory;
 	/* Log of all agents in the sim || AgentId: Agent */
 	std::unordered_map<std::string, std::shared_ptr<Agent>> agents;
+	/* Agents whose resting order was just hit and that should be re-scheduled immediately
+	*
+	* Backed off quoting agents would otherwise wait out their idle timer before
+	* replacing a filled quote. Drained by CoreSim after each event.
+	*/
+	std::vector<std::string> wakeQueue;
 
 	OrderBook() = default;
 	OrderBook(double currentPrice, unsigned int shareFloat = 0);
