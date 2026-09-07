@@ -30,10 +30,11 @@ struct Config {
     unsigned short agentStartCount = 100;
     unsigned int obShareFloat = 100'000;
     double obStartPrice = 1.00;
-    /* Target concurrent transient agents as a share of the resident population, 0 disables
+    /* MEDIAN share of the resident population that is transient, 0 disables
     *
-    * The whole transient path is skipped when this is 0, consuming no RNG, so a run with
-    * transient agents off reproduces a pre-feature run exactly.
+    * Each run draws its own fraction around this, so market character varies by seed --
+    * see CoreSim::runTransientFraction. The whole transient path is skipped when this is 0,
+    * consuming no RNG, so a run with transient agents off reproduces a pre-feature run.
     */
     double transientFraction = 0.0;
 
@@ -108,6 +109,7 @@ struct BackDataProgress {
     long long ticks = 0;
     int extraDays = 0;           // extra days added chasing minLiquidity
     long long transientArrivals = 0;  // transient agents admitted so far
+    double transientFraction = 0.0;   // this run's own drawn fraction
     int liveTransients = 0;           // transient agents in the market right now
 };
 
@@ -227,6 +229,15 @@ public:
     * Returns immediately, touching no RNG, when transientFraction is 0.
     */
     void processTransientArrivals(double simTimeMs);
+    /* Draw this run's transient fraction around the configured median
+    *
+    * Called by initAgents, AFTER every resident exists: drawing it earlier would shift the
+    * whole population construction, so a run with transients on and one with them off would
+    * not even share the same residents. Sets exactly 0 when the feature is off, consuming
+    * no RNG. Anything driving the arrival path without initAgents must call this first, or
+    * the fraction stays 0 and no transient ever arrives.
+    */
+    void rollRunTransientFraction();
     /* Ceiling on live transient agents for the current resident population */
     int transientPopulationCap() const;
 
@@ -263,6 +274,9 @@ public:
     *  before the slot is rerolled and the evidence is gone */
     std::function<void(std::shared_ptr<Agent>, double)> onTransientDepart;
 
+    /* This run's actual transient fraction, drawn once in initAgents around the configured
+    *  median. Zero exactly when the feature is off. */
+    double runTransientFraction = 0.0;
     /* Non-transient agents, the denominator the arrival rate scales against */
     int residentCount = 0;
     /* Sim time arrivals were last drawn for, the Poisson interval runs from here */

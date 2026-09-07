@@ -169,12 +169,26 @@ inline constexpr double TRANSIENT_MEAN_TENURE_MINUTES = TRANSIENT_MIN_TENURE_MIN
 * much of the crowd is transient"), and transient activity stays proportional as
 * agentStartCount changes instead of needing retuning at every population size.
 */
-inline constexpr double TRANSIENT_DEFAULT_FRACTION = 0.08;
+inline constexpr double TRANSIENT_DEFAULT_FRACTION = 0.04;
+/* ---- Per-run variation in that fraction ----
+*
+* The configured fraction is the MEDIAN, not the value every run uses. Each run draws its
+* own, so one seed gets a market thick with short-term traders and another a quiet one,
+* rather than every run of a given size having identical participant composition. This is
+* the same idiom initAgents already uses for percRetail and the subtype thresholds.
+*
+* Lognormal rather than uniform in log: uniform would make a 2x market as likely as a 1.05x
+* one, so the extremes would be routine instead of occasional. With this spread about two
+* thirds of runs land within 0.71x to 1.41x of the median and 95% within 0.5x to 2x, with a
+* hard clamp beyond that so a tail draw cannot produce an absurd market.
+*/
+inline constexpr double TRANSIENT_FRACTION_LOG_SD = 0.35;
+inline constexpr double TRANSIENT_FRACTION_MAX_FACTOR = 4.0;
 /* Hard ceiling on LIVE transient agents, as a share of residents. Pooled slots do not count.
 *
-* Defense in depth like the back-data caps, not a working limit: steady state sits near
-* TRANSIENT_DEFAULT_FRACTION, well under this. The headroom multiple keeps the ceiling
-* clear of the target if the fraction is ever raised, so it cannot silently start binding.
+* Defense in depth like the back-data caps, not a working limit: steady state sits near the
+* run's own fraction, well under this. The headroom multiple keeps the ceiling clear of that
+* fraction, so neither raising the setting nor a high per-run draw makes it silently bind.
 */
 inline constexpr double TRANSIENT_MAX_POPULATION_FRACTION = 0.25;
 inline constexpr double TRANSIENT_CAP_HEADROOM = 3.0;

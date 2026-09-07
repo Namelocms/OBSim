@@ -5,6 +5,7 @@
 #include "include/Util.h"
 #include "include/SimClock.h"
 #include <algorithm>
+#include <cmath>
 
 // ---- Main Simulation Loop ----
 
@@ -28,6 +29,7 @@ void CoreSim::run(SimClock& clock) {
 	this->transientStranded = 0;
 	this->lastArrivalCheckMs = 0.0;
 	this->residentCount = 0;
+	this->runTransientFraction = 0.0;
 
 	//std::cout << "Initializing Agents..." << std::endl;
 	this->initAgents(this->parameters.agentStartCount);
@@ -332,6 +334,25 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 		// random chance 3 of being random percent below or above beta price
 		// add holding(s)
 	}
+
+	// Drawn last, once every resident exists. See rollRunTransientFraction.
+	this->rollRunTransientFraction();
+}
+void CoreSim::rollRunTransientFraction() {
+	// Off is off, and draws nothing
+	if (this->parameters.transientFraction <= 0.0) {
+		this->runTransientFraction = 0.0;
+		return;
+	}
+
+	// Lognormal about the configured median, so most runs sit near it and a thick or thin
+	// market is occasional rather than routine. Clamped so a tail draw cannot produce one
+	// that is absurd.
+	double factor = std::exp(TRANSIENT_FRACTION_LOG_SD * sampleNormal());
+	if (factor < 1.0 / TRANSIENT_FRACTION_MAX_FACTOR) { factor = 1.0 / TRANSIENT_FRACTION_MAX_FACTOR; }
+	if (factor > TRANSIENT_FRACTION_MAX_FACTOR) { factor = TRANSIENT_FRACTION_MAX_FACTOR; }
+
+	this->runTransientFraction = this->parameters.transientFraction * factor;
 }
 void CoreSim::reportBackDataProgress(const SimClock& clock, long long eventsProcessed) {
 	if (!this->onBackDataProgress) { return; }
@@ -347,6 +368,7 @@ void CoreSim::reportBackDataProgress(const SimClock& clock, long long eventsProc
 	p.ticks = (long long)this->OB.tickHistory.size();
 	p.extraDays = this->backDataExtraDays;
 	p.transientArrivals = this->transientArrivals;
+	p.transientFraction = this->runTransientFraction;
 	p.liveTransients = this->liveTransientCount;
 
 	double pct = (this->backDataTargetMs > 0.0) ? (clock.simTimeMs / this->backDataTargetMs) * 100.0 : 100.0;
@@ -671,16 +693,16 @@ static double transientSessionFactor(Session session) {
 }
 
 int CoreSim::transientPopulationCap() const {
-	// Keep the ceiling clear of the configured target, so raising transientFraction cannot
-	// quietly start clipping arrivals instead of changing the population
+	// Keep the ceiling clear of THIS RUN's fraction, not the configured median, so a run
+	// that drew a busy market is not quietly clipped back toward an average one
 	double capFraction = (std::max)(TRANSIENT_MAX_POPULATION_FRACTION,
-		this->parameters.transientFraction * TRANSIENT_CAP_HEADROOM);
+		this->runTransientFraction * TRANSIENT_CAP_HEADROOM);
 	return int(capFraction * double(this->residentCount));
 }
 void CoreSim::processTransientArrivals(double simTimeMs) {
 	// The disabled path must consume no RNG at all, so that a run with transient agents
 	// off reproduces a pre-feature run exactly. Every early return here is before a draw.
-	if (this->parameters.transientFraction <= 0.0) {
+	if (this->runTransientFraction <= 0.0) {
 		this->lastArrivalCheckMs = simTimeMs;
 		return;
 	}
@@ -696,7 +718,7 @@ void CoreSim::processTransientArrivals(double simTimeMs) {
 	// Little's law: to hold `fraction` of the resident count in the market at once, given a
 	// mean stay of meanTenureHours, arrivals must run at population / meanTenureHours.
 	double meanTenureHours = TRANSIENT_MEAN_TENURE_MINUTES / 60.0;
-	double targetPopulation = this->parameters.transientFraction * double(this->residentCount);
+	double targetPopulation = this->runTransientFraction * double(this->residentCount);
 	double arrivalsPerHour = (targetPopulation / meanTenureHours) * transientSessionFactor(this->OB.session);
 	if (arrivalsPerHour <= 0.0) { return; }
 

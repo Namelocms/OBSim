@@ -432,6 +432,7 @@ void SimTUI::refreshState_() {
     // them would make the readout climb permanently as slots accumulate.
     state_.residentAgents = sim_.residentCount;
     state_.liveTransients = sim_.liveTransientCount;
+    state_.transientFraction = sim_.runTransientFraction;
     state_.totalAgents = state_.residentAgents + state_.liveTransients;
     state_.shareFloat = sim_.OB.shareFloat;
     state_.marketBaseSentiment = sim_.OB.marketNeutralSentiment;
@@ -564,8 +565,11 @@ Element SimTUI::buildHeader_() {
         text(std::to_string(state_.totalOrders)) | color(Color::White),
         text("  Agents: ") | color(Color::GrayDark),
         text(std::to_string(state_.residentAgents)) | color(Color::White),
-        text(state_.liveTransients > 0 ? " +" + std::to_string(state_.liveTransients) : "")
+        text(state_.transientFraction > 0.0 ? " +" + std::to_string(state_.liveTransients) : "")
             | color(Color::Magenta),
+        text(state_.transientFraction > 0.0
+                ? " (~" + fmtDouble(100.0 * state_.transientFraction, 1) + "%)" : "")
+            | color(Color::GrayDark),
         text("  Float: ") | color(Color::GrayDark),
         text(std::to_string(state_.shareFloat)) | color(Color::White),
         text("  SimTime: ") | color(Color::GrayDark),
@@ -990,10 +994,14 @@ Element SimTUI::buildBackDataOverlay_() {
         text(fmtDouble(p.totalMinutes, 0) + " / " + fmtDouble(p.targetMinutes, 0)) | color(Color::White)));
     rows.push_back(row("Trades", text(std::to_string(p.ticks)) | color(Color::White)));
     rows.push_back(row("Events", text(std::to_string(p.events)) | color(Color::White)));
-    if (p.transientArrivals > 0) {
+    if (p.transientFraction > 0.0) {
         rows.push_back(row("Transients",
             text(std::to_string(p.liveTransients) + " in market, "
                  + std::to_string(p.transientArrivals) + " total") | color(Color::Magenta)));
+        // Drawn per run, so this is part of what makes a seed its own market
+        rows.push_back(row("Transient mix",
+            text(fmtDouble(100.0 * p.transientFraction, 1) + "% of residents (this run)")
+            | color(Color::Magenta)));
     }
     rows.push_back(row("Price", text("$" + fmtDouble(state_.currentPrice, 4)) | color(Color::White)));
 

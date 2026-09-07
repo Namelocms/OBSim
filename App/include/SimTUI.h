@@ -82,6 +82,8 @@ struct TUIState {
     int      totalAgents = 0;
     int      residentAgents = 0;
     int      liveTransients = 0;
+    /* This run's own transient fraction, drawn at startup. 0 when the feature is off. */
+    double   transientFraction = 0.0;
     unsigned shareFloat = 0;
     Session  session = Session::PREMARKET;
 
