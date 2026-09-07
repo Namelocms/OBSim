@@ -69,10 +69,10 @@ _Why not use Monte-Carlo Simulations?_
 - [x] Terminal UI: Live candlestick chart, orderbook, agent table, event log, reset dialog using [FTXUI](https://github.com/ArthurSonzogni/FTXUI/tree/main)
 - [x] Extended hours phases: premarket, regular, afterhours and overnight sessions on a real market calendar, with session-driven order rules and expiry
 - [x] Back data initialization: headless, time-bounded warm-up that builds real price history and a populated book before the live sim opens
+- [x] Transient agents: short-lived participants that arrive, trade for a drawn tenure, and leave again, on a recycled slot pool
 - [ ] Robust UI: A more refined UI for better UX and data displays, possibly web-based or using python
 - [ ] Agent population composition refinement
 - [ ] Agent lifecycles and exit conditions
-- [ ] Temporary agents that enter and leave the market for additional volume
 - [ ] User order placements in UI
 - [ ] API for order placements (for algos/AI)
 - [ ] Technical indicators maybe ablility for custom indicators?
@@ -99,6 +99,17 @@ Before the live simulation opens, OBSim runs the real engine headless and unthro
 - Runs every session in order, including the overnight decision, and hands off exactly at the open of the session you choose
 - Optional minimum liquidity target extends the run a whole day at a time so the handoff still lands on the same session open
 - Progress overlay with a cancel key, since a long span can take a moment
+
+### Transient Agents
+The resident population is fixed for the life of a run, which makes activity a constant function of agent count. Transient agents are the floating part: retail takers who show up, trade for a while, and leave. They contribute roughly a third of regular-session volume at the default setting, and they are what keeps extended hours from going silent in a small market.
+
+- **Arrival** is a Poisson process evaluated on the existing participation sweep. Its rate is expressed as a target *steady-state concurrency* as a share of the resident population, converted by Little's law, so transient activity stays proportional as agent count changes instead of needing retuning at every size. Each session has its own rate multiplier.
+- **Tenure** is a fixed commitment window followed by an exponential hazard with a per-agent half-life, hard-capped. The hazard runs on elapsed *simulated time*, not per action, so an agent that acts every two seconds and one that acts every fifteen minutes draw from the same distribution — a lifespan is never an accident of reaction speed.
+- **Departure** is driven by the agent's own averaged sentiment turning against the way it is positioned. It is expressed against `Agent::directionalBias` rather than against the sign of sentiment, so a short-side agent added later inherits the whole mechanism by flipping one number.
+- **Unwinding.** A leaving agent cancels its entry-side orders and works its position off, always crossing and always for the whole remaining size. Participation gating is suspended while it does, or an agent that went dormant off hours could never get flat. One that cannot clear inside its grace window is *stranded*, not retired: its cadence stretches to hours and it keeps working the position off, so the float keeps circulating.
+- **Recycling.** Agents are never destroyed. A departed agent's slot returns to a pool and the next arrival revives it with a completely rerolled personality, so `OB.agents` reaches a high-water mark instead of growing. Slots are reused 10-20 times each over a few days.
+
+Toggle them from the reset dialog. Off is exactly off: the whole path is skipped and consumes no random draws, so a run reproduces one from before the feature existed.
 
 ## Performance
 These are slightly outdated since this was done on the inital MVP, pre-TUI, but performance is comparable, if not better now.
@@ -233,6 +244,7 @@ There are two ways to do this, one in code, the other in the TUI.
 | Agent Start Count | Number of agents created at startup |
 | Share Float | Total shares dispersed among agents |
 | Start Price | Price at the **start of the back data**. The live opening price emerges from trading |
+| Transient Agents | Whether short-lived agents enter and leave during the run. Off skips the path entirely |
 
 Note that back data consumes random draws, so a run is identified by the whole parameter set rather than the seed alone.
 
@@ -255,6 +267,9 @@ This is responsible for the user interface. It is where data from the `Core` is 
 - Afterhours currently trades slightly faster per minute than premarket, a consequence of the decay starting at full rate while premarket builds from the overnight floor
 - Trade volume scales with agent count, so small populations produce a thin market. A few hundred agents or more is recommended for realistic behavior
 - `tickHistory` grows unbounded across long back data spans, and the chart re-aggregates the whole history when the timeframe changes
+- Transient agent arrival rate, tenure and reaction times are hand-tuned starting values in the same class as the participation rates, not calibrated against real market data
+- Transient agents arrive holding no shares, so they must buy before they can sell. At steady state arrivals and departures balance, but the effect is measurable on the price path
+- Price drifts strongly upward over long runs, and does so with or without transient agents. Under investigation
 
 ## Contact
 Check out my [LinkedIn](https://www.linkedin.com/in/sean-coleman-974652270) or start a [discussion](https://github.com/Namelocms/OBSim/discussions) in this repo!
