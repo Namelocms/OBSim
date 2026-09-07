@@ -101,12 +101,13 @@ Before the live simulation opens, OBSim runs the real engine headless and unthro
 - Progress overlay with a cancel key, since a long span can take a moment
 
 ### Transient Agents
-The resident population is fixed for the life of a run, which makes activity a constant function of agent count. Transient agents are the floating part: retail takers who show up, trade for a while, and leave. They contribute roughly a third of regular-session volume at the default setting, and they are what keeps extended hours from going silent in a small market.
+The resident population is fixed for the life of a run, which makes activity a constant function of agent count. Transient agents are the floating part: retail takers who show up, trade for a while, and leave. They contribute roughly a fifth of regular-session volume in a median run, more or less depending on what that run drew, and they are what keeps extended hours from going silent in a small market.
 
 - **Arrival** is a Poisson process evaluated on the existing participation sweep. Its rate is expressed as a target *steady-state concurrency* as a share of the resident population, converted by Little's law, so transient activity stays proportional as agent count changes instead of needing retuning at every size. Each session has its own rate multiplier.
 - **Tenure** is a fixed commitment window followed by an exponential hazard with a per-agent half-life, hard-capped. The hazard runs on elapsed *simulated time*, not per action, so an agent that acts every two seconds and one that acts every fifteen minutes draw from the same distribution — a lifespan is never an accident of reaction speed.
 - **Departure** is driven by the agent's own averaged sentiment turning against the way it is positioned. It is expressed against `Agent::directionalBias` rather than against the sign of sentiment, so a short-side agent added later inherits the whole mechanism by flipping one number.
 - **Unwinding.** A leaving agent cancels its entry-side orders and works its position off, always crossing and always for the whole remaining size. Participation gating is suspended while it does, or an agent that went dormant off hours could never get flat. One that cannot clear inside its grace window is *stranded*, not retired: its cadence stretches to hours and it keeps working the position off, so the float keeps circulating.
+- **Per-run variation.** The configured fraction is a *median*, not a fixed setting. Each run draws its own around it, so one seed opens a market thick with short-term traders and another a quiet one, instead of every run of a given size having identical participant composition. Most runs land near the median; a noticeably thick or thin market is occasional.
 - **Recycling.** Agents are never destroyed. A departed agent's slot returns to a pool and the next arrival revives it with a completely rerolled personality, so `OB.agents` reaches a high-water mark instead of growing. Slots are reused 10-20 times each over a few days.
 
 Toggle them from the reset dialog. Off is exactly off: the whole path is skipped and consumes no random draws, so a run reproduces one from before the feature existed.
@@ -244,7 +245,7 @@ There are two ways to do this, one in code, the other in the TUI.
 | Agent Start Count | Number of agents created at startup |
 | Share Float | Total shares dispersed among agents |
 | Start Price | Price at the **start of the back data**. The live opening price emerges from trading |
-| Transient Agents | Whether short-lived agents enter and leave during the run. Off skips the path entirely |
+| Transient Agents | Whether short-lived agents enter and leave during the run. Each run draws its own share of them. Off skips the path entirely |
 
 Note that back data consumes random draws, so a run is identified by the whole parameter set rather than the seed alone.
 
