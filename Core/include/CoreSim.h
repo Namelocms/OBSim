@@ -107,6 +107,8 @@ struct BackDataProgress {
     long long events = 0;
     long long ticks = 0;
     int extraDays = 0;           // extra days added chasing minLiquidity
+    long long transientArrivals = 0;  // transient agents admitted so far
+    int liveTransients = 0;           // transient agents in the market right now
 };
 
 struct EventCall {

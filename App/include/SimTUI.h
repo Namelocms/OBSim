@@ -40,6 +40,8 @@ struct ResetParams {
     std::string agentCount = "100";
     std::string shareFloat = "250000";
     std::string startPrice = "1.00";
+    /* Whether transient agents take part, toggled rather than typed */
+    bool        transientAgents = true;
 };
 
 // ---- TUI State (thread-safe snapshot of sim data) ----
@@ -64,6 +66,7 @@ struct TUIState {
         int         numAsks = 0;
         double      sentiment = 0.0;
         std::string status;
+        bool        isTransient = false;
     };
     std::vector<AgentRow>   agents;
 
@@ -74,7 +77,11 @@ struct TUIState {
     double   marketBaseSentiment = 0.0;
     int      totalTicks = 0;
     int      totalOrders = 0;
+    /* Agents actually in the market. NOT OB.agents.size(), which also counts pooled
+    *  transient slots -- inert agent objects waiting to be rerolled. */
     int      totalAgents = 0;
+    int      residentAgents = 0;
+    int      liveTransients = 0;
     unsigned shareFloat = 0;
     Session  session = Session::PREMARKET;
 
@@ -153,8 +160,13 @@ private:
     // ---- Reset dialog field layout ----
     /* Sessions the live sim may open in, in dialog cycle order */
     static constexpr int LIVE_START_SESSION_COUNT = 3;
-    /* Which dialog row is the session picker, cycled with ←/→ instead of typed */
+    /* Dialog rows that are pickers, cycled with ←/→ or space instead of typed.
+    *  Both are marked by a nullptr entry in the field vectors. */
     static constexpr int SESSION_FIELD_IDX = 2;
+    static constexpr int TRANSIENT_FIELD_IDX = 7;
+    /* Most agent rows copied into a snapshot. Residents come first so the default view is
+    *  stable; transients follow, since they are the rows that churn. */
+    static constexpr int MAX_AGENT_ROWS = 400;
     static Session sessionFromIdx_(int idx);
 
     // ---- Helper: render one ASCII candle column ----

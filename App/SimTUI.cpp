@@ -76,7 +76,8 @@ void SimTUI::run() {
         &resetDraft_.minLiquidity,
         &resetDraft_.agentCount,
         &resetDraft_.shareFloat,
-        &resetDraft_.startPrice
+        &resetDraft_.startPrice,
+        nullptr                       // Transient Agents toggle
     };
 
     // ---- Install sim callbacks ----
@@ -149,16 +150,19 @@ void SimTUI::run() {
                 resetFocusIdx_ = (resetFocusIdx_ - 1 + (int)resetFields.size()) % (int)resetFields.size();
                 return true;
             }
-            // Session picker is cycled, not typed
-            if (resetFocusIdx_ == SESSION_FIELD_IDX) {
-                if (event == Event::ArrowRight || event == Event::Character(' ')) {
-                    resetDraft_.liveStartSessionIdx =
-                        (resetDraft_.liveStartSessionIdx + 1) % LIVE_START_SESSION_COUNT;
-                    return true;
-                }
-                if (event == Event::ArrowLeft) {
-                    resetDraft_.liveStartSessionIdx =
-                        (resetDraft_.liveStartSessionIdx - 1 + LIVE_START_SESSION_COUNT) % LIVE_START_SESSION_COUNT;
+            // Picker rows are cycled, not typed. A nullptr field marks one.
+            if (resetFields[resetFocusIdx_] == nullptr) {
+                bool forward = (event == Event::ArrowRight || event == Event::Character(' '));
+                bool back = (event == Event::ArrowLeft);
+                if (forward || back) {
+                    if (resetFocusIdx_ == SESSION_FIELD_IDX) {
+                        int step = forward ? 1 : (LIVE_START_SESSION_COUNT - 1);
+                        resetDraft_.liveStartSessionIdx =
+                            (resetDraft_.liveStartSessionIdx + step) % LIVE_START_SESSION_COUNT;
+                    }
+                    else if (resetFocusIdx_ == TRANSIENT_FIELD_IDX) {
+                        resetDraft_.transientAgents = !resetDraft_.transientAgents;
+                    }
                     return true;
                 }
             }
@@ -188,6 +192,10 @@ void SimTUI::run() {
                 unsigned short newAgentCount = (unsigned short)toUInt(resetDraft_.agentCount, 100);
                 unsigned newShareFloat = toUInt(resetDraft_.shareFloat, 250000);
                 double   newStartPrice = toDbl(resetDraft_.startPrice, 1.0);
+                // Off means exactly off: a fraction of 0 skips the transient path entirely
+                // and consumes no RNG, so the run reproduces a pre-feature one.
+                double   newTransientFraction =
+                    resetDraft_.transientAgents ? TRANSIENT_DEFAULT_FRACTION : 0.0;
 
                 // 1. Tell the sim loop to exit
                 sim_.isRunning = false;
@@ -201,7 +209,7 @@ void SimTUI::run() {
                 std::swap(sim_.eventCallQueue, empty);
 
                 sim_.setParameters(newSeed, newBackDataDays, newLiveStart, newMinLiquidity,
-                    newAgentCount, newShareFloat, newStartPrice);
+                    newAgentCount, newShareFloat, newStartPrice, newTransientFraction);
                 simDone_.store(false);
 
                 {
@@ -419,7 +427,12 @@ void SimTUI::refreshState_() {
     state_.simTimeMs = clock_.simTimeMs;
     state_.totalTicks = sim_.OB.tickCount;
     state_.totalOrders = sim_.OB.bidQueue.size() + sim_.OB.askQueue.size();
-    state_.totalAgents = sim_.OB.agents.size();
+    // NOT OB.agents.size(): with transient agents that map also holds POOLED slots, which
+    // are inert agent objects waiting to be rerolled and are not in the market. Counting
+    // them would make the readout climb permanently as slots accumulate.
+    state_.residentAgents = sim_.residentCount;
+    state_.liveTransients = sim_.liveTransientCount;
+    state_.totalAgents = state_.residentAgents + state_.liveTransients;
     state_.shareFloat = sim_.OB.shareFloat;
     state_.marketBaseSentiment = sim_.OB.marketNeutralSentiment;
 
@@ -435,10 +448,39 @@ void SimTUI::refreshState_() {
     for (auto& o : snap.asks)
         state_.asks.emplace_back(o->price, o->volume);
 
-    // Agent table (cap at 200 for perf)
+    // ---- Agent table ----
+    //
+    // Two things matter here beyond just copying rows.
+    //
+    // POOLED slots are skipped: they are empty seats, not participants, and showing them
+    // would fill the table with inert rows.
+    //
+    // Rows are sorted, residents first and then live transients, each by id.
+    //
+    // Two reasons. The one that shows: residents lead, so the default page does not churn as
+    // transients arrive and leave, and the transient rows sit together at the end where they
+    // are worth watching. The one that does not: unordered_map iteration order is
+    // implementation defined and a rehash may reorder it, which nothing before now could
+    // trigger because no agent was ever inserted after setup. This build happens to iterate
+    // in insertion order and so would not reshuffle, but sorting makes the table
+    // deterministic without relying on that.
     state_.agents.clear();
-    int cnt = 0;
+
+    std::vector<std::shared_ptr<Agent>> residents, transients;
+    residents.reserve(sim_.OB.agents.size());
     for (auto& [id, agent] : sim_.OB.agents) {
+        if (agent == nullptr || agent->status == AgentStatus::POOLED) { continue; }
+        (agent->isTransient ? transients : residents).push_back(agent);
+    }
+    auto byId = [](const std::shared_ptr<Agent>& a, const std::shared_ptr<Agent>& b) {
+        return a->id < b->id;
+        };
+    std::sort(residents.begin(), residents.end(), byId);
+    std::sort(transients.begin(), transients.end(), byId);
+    residents.insert(residents.end(), transients.begin(), transients.end());
+
+    int cnt = 0;
+    for (const std::shared_ptr<Agent>& agent : residents) {
         TUIState::AgentRow row;
         row.id = agent->id;
         row.cash = agent->cash;
@@ -446,16 +488,21 @@ void SimTUI::refreshState_() {
         row.numBids = agent->activeBids.size();
         row.numAsks = agent->activeAsks.size();
         row.sentiment = agent->sentiment;
+        row.isTransient = agent->isTransient;
         // status string
         switch (agent->status) {
         case AgentStatus::ACTIVE:   row.status = "ACT"; break;
         case AgentStatus::INACTIVE: row.status = "IDL"; break;
         case AgentStatus::BANKRUPT: row.status = "BNK"; break;
-        case AgentStatus::LEAVING:  row.status = "LVG"; break;
         case AgentStatus::POOLED:   row.status = "PLD"; break;
+        case AgentStatus::LEAVING:
+            // Stranded is derived, not a status of its own: it is a leaving agent that ran
+            // past its unwind window still holding a position
+            row.status = agent->isStranded(clock_.simTimeMs) ? "STK" : "LVG";
+            break;
         }
         state_.agents.push_back(std::move(row));
-        if (++cnt >= 200) break;
+        if (++cnt >= MAX_AGENT_ROWS) break;
     }
 }
 
@@ -516,7 +563,9 @@ Element SimTUI::buildHeader_() {
         text("  Orders: ") | color(Color::GrayDark),
         text(std::to_string(state_.totalOrders)) | color(Color::White),
         text("  Agents: ") | color(Color::GrayDark),
-        text(std::to_string(state_.totalAgents)) | color(Color::White),
+        text(std::to_string(state_.residentAgents)) | color(Color::White),
+        text(state_.liveTransients > 0 ? " +" + std::to_string(state_.liveTransients) : "")
+            | color(Color::Magenta),
         text("  Float: ") | color(Color::GrayDark),
         text(std::to_string(state_.shareFloat)) | color(Color::White),
         text("  SimTime: ") | color(Color::GrayDark),
@@ -717,9 +766,12 @@ Element SimTUI::buildAgentTable_() {
         if (a.status == "ACT") stCol = Color::Green;
         if (a.status == "BNK") stCol = Color::Red;
         if (a.status == "IDL") stCol = Color::GrayDark;
+        if (a.status == "LVG") stCol = Color::Yellow;
+        if (a.status == "STK") stCol = Color::Magenta;
 
         rows.push_back(hbox({
-            col(a.id,                        16),
+            col(std::string(a.isTransient ? "~" : " ") + a.id, 16,
+                a.isTransient ? Color::Magenta : Color::White),
             col("$" + fmtDouble(a.cash, 2),    10, Color::Cyan),
             col(std::to_string(a.holdings),   6, Color::Yellow),
             col(std::to_string(a.numBids),    6, Color::Green),
@@ -730,7 +782,7 @@ Element SimTUI::buildAgentTable_() {
     }
 
     std::string title = " Agents [" + std::to_string(agentPage_ + 1) + "/" + std::to_string(pages)
-        + " | A/D: page] ";
+        + " | A/D: page | ~ transient] ";
     return window(text(title) | color(Color::Cyan),
         vbox(std::move(rows)) | flex
     ) | flex;
@@ -790,7 +842,7 @@ Element SimTUI::buildResetDialog_() {
     // Order must match resetFields in run() and SESSION_FIELD_IDX
     const std::vector<std::string> labels = {
         "Seed", "Back Data (days)", "Live Start", "Min Liquidity",
-        "Agent Count", "Share Float", "Start Price"
+        "Agent Count", "Share Float", "Start Price", "Transient Agents"
     };
     std::vector<std::string*> fields = {
         &resetDraft_.seed,
@@ -799,7 +851,8 @@ Element SimTUI::buildResetDialog_() {
         &resetDraft_.minLiquidity,
         &resetDraft_.agentCount,
         &resetDraft_.shareFloat,
-        &resetDraft_.startPrice
+        &resetDraft_.startPrice,
+        nullptr                       // transient toggle
     };
 
     Session pickedSession = sessionFromIdx_(resetDraft_.liveStartSessionIdx);
@@ -815,6 +868,12 @@ Element SimTUI::buildResetDialog_() {
         if (i == SESSION_FIELD_IDX) {
             std::string display = "< " + sessionLabel_(pickedSession) + " >";
             value = text(display) | bold | color(focused ? sessionColor_(pickedSession) : Color::GrayDark);
+        }
+        else if (i == TRANSIENT_FIELD_IDX) {
+            bool on = resetDraft_.transientAgents;
+            std::string display = std::string("< ") + (on ? "ON" : "OFF") + " >";
+            Color onColor = on ? Color::Green : Color::GrayDark;
+            value = text(display) | bold | color(focused ? onColor : Color::GrayDark);
         }
         else {
             std::string display = *fields[i] + (focused ? "▌" : " ");
@@ -931,6 +990,11 @@ Element SimTUI::buildBackDataOverlay_() {
         text(fmtDouble(p.totalMinutes, 0) + " / " + fmtDouble(p.targetMinutes, 0)) | color(Color::White)));
     rows.push_back(row("Trades", text(std::to_string(p.ticks)) | color(Color::White)));
     rows.push_back(row("Events", text(std::to_string(p.events)) | color(Color::White)));
+    if (p.transientArrivals > 0) {
+        rows.push_back(row("Transients",
+            text(std::to_string(p.liveTransients) + " in market, "
+                 + std::to_string(p.transientArrivals) + " total") | color(Color::Magenta)));
+    }
     rows.push_back(row("Price", text("$" + fmtDouble(state_.currentPrice, 4)) | color(Color::White)));
 
     if (p.extraDays > 0) {

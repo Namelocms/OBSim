@@ -346,6 +346,8 @@ void CoreSim::reportBackDataProgress(const SimClock& clock, long long eventsProc
 	p.events = eventsProcessed;
 	p.ticks = (long long)this->OB.tickHistory.size();
 	p.extraDays = this->backDataExtraDays;
+	p.transientArrivals = this->transientArrivals;
+	p.liveTransients = this->liveTransientCount;
 
 	double pct = (this->backDataTargetMs > 0.0) ? (clock.simTimeMs / this->backDataTargetMs) * 100.0 : 100.0;
 	p.percent = (pct < 0.0) ? 0.0 : (pct > 100.0 ? 100.0 : pct);

@@ -1,5 +1,6 @@
 #include "SimClock.h"
 #include "CoreSim.h"
+#include "Agent.h"   // TRANSIENT_DEFAULT_FRACTION
 #include "include/SimTUI.h"
 
 int main() {
@@ -12,7 +13,8 @@ int main() {
 		0,					// Min Liquidity, 0 disables the check
 		100,				// Agent Start Count
 		2'500'000,			// Share Float
-		1.00				// Start Price, price at the START of the back data
+		1.00,				// Start Price, price at the START of the back data
+		TRANSIENT_DEFAULT_FRACTION	// Transient agents, as a share of the resident population. 0 disables
 	);
 	
 	SimTUI tui(sim, clock);
