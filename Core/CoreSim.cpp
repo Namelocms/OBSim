@@ -7,6 +7,63 @@
 #include <algorithm>
 #include <cmath>
 
+namespace {
+
+/* Hand out exactly poolShares among weights, largest remainder first
+*
+* Every agent's exact claim is poolShares * w / sum(w). Taking the floor of each always
+* under-allocates, so the shortfall is handed out one share at a time to the largest
+* fractional parts -- Hamilton apportionment. Two properties matter here:
+*
+*   * the pool is exhausted EXACTLY, at any population and any float, which is what stops
+*     the float being partly imaginary the way the old stick-break left it below ~500 agents
+*   * an agent whose exact claim is under one share still has a fair claim on the leftover
+*     rather than being guaranteed nothing, so the small end of the tail is not
+*     systematically zeroed
+*
+* Ties break on index so the result is deterministic for a given seed.
+*/
+void apportionShares(const std::vector<double>& weights, unsigned int poolShares,
+	std::vector<unsigned int>& out) {
+
+	out.assign(weights.size(), 0u);
+	if (weights.empty() || poolShares == 0) { return; }
+
+	double total = 0.0;
+	for (double w : weights) { total += w; }
+
+	// Degenerate only if every weight underflowed to zero. Falling back to equal claims
+	// keeps the pool conserved instead of dividing by zero and losing the float.
+	bool equalClaims = !(total > 0.0);
+	if (equalClaims) { total = double(weights.size()); }
+
+	std::vector<std::pair<double, size_t>> remainders;
+	remainders.reserve(weights.size());
+
+	unsigned int assigned = 0;
+	for (size_t i = 0; i < weights.size(); ++i) {
+		double exact = double(poolShares) * (equalClaims ? 1.0 : weights[i]) / total;
+		double whole = std::floor(exact);
+		out[i] = (unsigned int)whole;
+		assigned += out[i];
+		remainders.emplace_back(exact - whole, i);
+	}
+
+	unsigned int leftover = (poolShares > assigned) ? (poolShares - assigned) : 0u;
+	if (leftover == 0) { return; }
+	if (leftover > remainders.size()) { leftover = (unsigned int)remainders.size(); }
+
+	std::sort(remainders.begin(), remainders.end(),
+		[](const std::pair<double, size_t>& a, const std::pair<double, size_t>& b) {
+			if (a.first != b.first) { return a.first > b.first; }
+			return a.second < b.second;
+		});
+
+	for (unsigned int k = 0; k < leftover; ++k) { ++out[remainders[k].second]; }
+}
+
+} // namespace
+
 // ---- Main Simulation Loop ----
 
 void CoreSim::run(SimClock& clock) {
@@ -187,9 +244,12 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 	// count, so transient agents never breed more transient agents.
 	this->residentCount = _agentStartCount;
 
-	// track current share count against float
-	unsigned int dispersedShares_I = unsigned int(this->OB.shareFloat * 0.70);
-	unsigned int dispersedShares_R = this->OB.shareFloat - dispersedShares_I;
+	// Ownership structure for this run. Drawn rather than fixed, see INST_FLOAT_SHARE_MEDIAN:
+	// a constant here made every market identical in the one respect that most decides who
+	// can supply the sell side.
+	double instFloatShare = randomDouble(
+		INST_FLOAT_SHARE_MEDIAN * (1.0 - INST_FLOAT_SHARE_SPREAD),
+		INST_FLOAT_SHARE_MEDIAN * (1.0 + INST_FLOAT_SHARE_SPREAD));
 
 	// Agent Type probabilities
 	// This should scale with stock cap (micro -> higher retail probability, Large cap -> more institution still high retail)
@@ -210,9 +270,19 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 	AgentStatus a_status = AgentStatus::ACTIVE;
 	AgentType a_type;
 	AgentSubType a_subType;
-	unsigned int startingShares;
+	double a_weight;
 
 	double roll;
+
+	// Shares cannot be handed out inside the loop: apportioning a pool needs every weight
+	// in it, and no weight exists until the last agent has been built. So the loop draws
+	// weights, and the float is dispersed against them afterwards.
+	std::vector<std::shared_ptr<Agent>> instAgents, retailAgents;
+	std::vector<double> instWeights, retailWeights;
+	instAgents.reserve(_agentStartCount);
+	retailAgents.reserve(_agentStartCount);
+	instWeights.reserve(_agentStartCount);
+	retailWeights.reserve(_agentStartCount);
 
 	// for each iteration
 	for (unsigned short i = 0; i < _agentStartCount; ++i) {
@@ -242,14 +312,9 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 			// Agent Account Balances
 			a_accountCash = roll <= 0.75 ? randomDouble(100.0, 1000.0) : randomDouble(1000.0, 40'000.0); // Lower account balances 75% more likely
 
-			if (dispersedShares_R > 1) {
-				startingShares = randomUInt(1, dispersedShares_R);
-			}
-			else {
-				startingShares = dispersedShares_R;
-			}
-			
-			dispersedShares_R -= startingShares;
+			// Claim on the retail pool. Normalised against the pool after the loop, so
+			// only the SPREAD of these matters, never their scale.
+			a_weight = std::exp(HOLDING_WEIGHT_SIGMA_RETAIL * sampleNormal());
 		}
 		else {
 			a_subType = roll <= algoType_I ? AgentSubType::ALGO : AgentSubType::INFORMED;
@@ -257,17 +322,9 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 			a_reactionTimeFloor = a_subType == AgentSubType::ALGO ? randomDouble(0.1, 1.0) : randomDouble(200.0, 3'600'000.0);
 			a_accountCash = randomDouble(50'000.0, 500'000.0); // TODO: Should be related to OB start price?
 
-			if (dispersedShares_I >= 10) {
-				startingShares = randomUInt(unsigned int(dispersedShares_I * 0.10), dispersedShares_I);
-			}
-			else if (dispersedShares_I > 1) {
-				startingShares = randomUInt(1, dispersedShares_I);
-			}
-			else {
-				startingShares = dispersedShares_I;
-			}
-			
-			dispersedShares_I -= startingShares;
+			// Claim on the institutional pool, tighter than retail: institutional
+			// positions cluster harder than a retail register's long tail.
+			a_weight = std::exp(HOLDING_WEIGHT_SIGMA_INST * sampleNormal());
 		}
 
 		// Create Agent
@@ -282,41 +339,6 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 			this->ME
 		);
 
-		if (startingShares > 0) {
-			// TODO: Should scale amt with current price?
-			//if (startingShares <= 10) {
-			roll = randomDouble(0.0, 1.0);
-			if (roll <= 0.50) {
-				roll = randomDouble(0.0, 1.0);
-				if (roll <= 0.50) {
-					agent->upsertHolding(Holding(agent->getBetaPrice(this->OB.currentPrice, OrderAction::ASK), startingShares));
-				}
-				else if (roll <= 0.75) {
-					roll = randomDouble(1.0, 10.0);
-					agent->upsertHolding(Holding(agent->getBetaPrice(this->OB.currentPrice - (this->OB.currentPrice * roll), OrderAction::ASK), startingShares));
-				}
-				else {
-					roll = randomDouble(1.0, 10.0);
-					agent->upsertHolding(Holding(agent->getBetaPrice(this->OB.currentPrice + (this->OB.currentPrice * roll), OrderAction::ASK), startingShares));
-				}
-			}
-			else {
-				roll = randomDouble(0.0, 1.0);
-				if (roll <= 0.50) {
-					agent->upsertHolding(Holding(agent->getBetaPrice(this->OB.currentPrice, OrderAction::BID), startingShares));
-				}
-				else if (roll <= 0.75) {
-					roll = randomDouble(1.0, 10.0);
-					agent->upsertHolding(Holding(agent->getBetaPrice(this->OB.currentPrice - (this->OB.currentPrice * roll), OrderAction::BID), startingShares));
-				}
-				else {
-					roll = randomDouble(1.0, 10.0);
-					agent->upsertHolding(Holding(agent->getBetaPrice(this->OB.currentPrice + (this->OB.currentPrice * roll), OrderAction::BID), startingShares));
-				}
-			}
-			//}
-		}
-		
 		// Passive quoting agents claim an early slot with their fast floor, then back
 		// off to a re-quote cadence. A fill wakes them again, so a stale quote is
 		// replaced on being hit rather than after waiting out the timer.
@@ -326,17 +348,71 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 		// Upsert Agent
 		this->OB.upsertAgent(agent);
 
-		// All agents here hold shares, initAgents will be for agents that can populate the orderbook, all the float could be dispersed? or just disperse until agent limit hit. All dispersed could cause a hyper active market where every single holder is active, not realistic
-		// Non-holding agents will be added seperately?
-		// get random share count based on float
-		// while share count is above 10
-		// random chance 2 of ASK or BID side price
-		// random chance 3 of being random percent below or above beta price
-		// add holding(s)
+		if (a_type == AgentType::INSTITUTION) {
+			instAgents.push_back(agent);
+			instWeights.push_back(a_weight);
+		}
+		else {
+			retailAgents.push_back(agent);
+			retailWeights.push_back(a_weight);
+		}
 	}
+
+	// ---- Disperse the float ----
+	//
+	// Every share of the float ends up in someone's hands, at every population and every
+	// float size. Agents whose claim rounds to nothing simply start flat, which is a real
+	// kind of participant -- someone who has not bought in yet -- rather than a defect to
+	// be patched.
+	unsigned int instPool = (unsigned int)std::llround(double(this->OB.shareFloat) * instFloatShare);
+	if (instPool > this->OB.shareFloat) { instPool = this->OB.shareFloat; }
+	unsigned int retailPool = this->OB.shareFloat - instPool;
+
+	// A run can legitimately draw a population with no institutions at all (percRetail
+	// reaches 1.00). Folding the orphaned pool into the other one keeps the float whole;
+	// leaving it unclaimed is what used to make shareFloat partly imaginary.
+	if (instAgents.empty()) { retailPool += instPool; instPool = 0; }
+	else if (retailAgents.empty()) { instPool += retailPool; retailPool = 0; }
+
+	std::vector<unsigned int> instShares, retailShares;
+	apportionShares(instWeights, instPool, instShares);
+	apportionShares(retailWeights, retailPool, retailShares);
+
+	for (size_t i = 0; i < instAgents.size(); ++i) { this->seedHolding(instAgents[i], instShares[i]); }
+	for (size_t i = 0; i < retailAgents.size(); ++i) { this->seedHolding(retailAgents[i], retailShares[i]); }
 
 	// Drawn last, once every resident exists. See rollRunTransientFraction.
 	this->rollRunTransientFraction();
+}
+void CoreSim::seedHolding(std::shared_ptr<Agent> agent, unsigned int shares) {
+	if (agent == nullptr || shares == 0) { return; }
+
+	// Which side of the spread the position was notionally acquired on
+	double roll = randomDouble(0.0, 1.0);
+	OrderAction side = (roll <= 0.50) ? OrderAction::ASK : OrderAction::BID;
+
+	// Cost basis only. Nothing reads Holding::price to make a decision; it exists so a
+	// starting position looks like one built up over time rather than all bought at
+	// today's price.
+	double basisPrice = this->OB.currentPrice;
+	roll = randomDouble(0.0, 1.0);
+	if (roll > 0.50) {
+		double factor = randomDouble(1.0, 10.0);
+
+		// The "below" case is the multiplicative MIRROR of the "above" case. It used to
+		// read currentPrice - (currentPrice * factor), which is currentPrice * (1 - factor)
+		// and therefore <= 0 for every factor in [1, 10]. getMaxVariance then evaluated
+		// pow(negative, -decayRate) and log(negative), so 23-27% of all starting lots
+		// carried a NaN cost basis. It never moved the market, since no decision reads
+		// this price -- but holdings is an unordered_map keyed BY price and NaN != NaN,
+		// so try_emplace could never merge such a lot and an agent recycling one
+		// accumulated duplicate entries without bound.
+		basisPrice = (roll <= 0.75)
+			? this->OB.currentPrice / (1.0 + factor)
+			: this->OB.currentPrice + (this->OB.currentPrice * factor);
+	}
+
+	agent->upsertHolding(Holding(agent->getBetaPrice(basisPrice, side), shares));
 }
 void CoreSim::rollRunTransientFraction() {
 	// Off is off, and draws nothing

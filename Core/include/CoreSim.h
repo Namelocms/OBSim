@@ -160,6 +160,14 @@ public:
     // ---- Simulation Initialization Functions ----
 
     void initAgents(unsigned short _agentStartCount);
+    /* Give an agent its apportioned starting position, with a plausible cost basis
+    *
+    * Split out of initAgents because the float can only be apportioned once every weight
+    * exists, so the position is assigned in a second pass rather than at construction.
+    * Does nothing for a zero apportionment: an agent that starts flat is a real kind of
+    * participant, not a case to be patched.
+    */
+    void seedHolding(std::shared_ptr<Agent> agent, unsigned int shares);
     /* Run the headless back-data simulation, unthrottled, from t = 0 to the live start
     *
     * Bounded by simulated time rather than fill count, so it always terminates even

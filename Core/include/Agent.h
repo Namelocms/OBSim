@@ -57,6 +57,50 @@ inline constexpr double EXT_PARTICIPATION_RETAIL_NOISE = 0.03;
 /* Share of its base rate retail retains at the deepest point of the overnight */
 inline constexpr double RETAIL_EXTENDED_FLOOR_FACTOR = 0.20;
 
+/* ---- Initial float dispersal ----
+*
+* Who owns the stock before the first trade. This decides who can supply the SELL side:
+* there is no shorting, directionalBias is always +1, and getRandomAction rewrites ASK to
+* HOLD for an agent holding nothing. So an agent that starts flat is structurally a buyer
+* until it has bought something, and the number of holders is the ceiling on sell-side
+* participation no matter how large agentStartCount is.
+*
+* The float is split into an institutional and a retail pool, and each pool is apportioned
+* across the agents of that type by a lognormal weight. Weights are NORMALISED against
+* their pool, so per-agent holdings shrink as the population grows rather than the number
+* of holders staying fixed -- an agent is a resolution unit, not a person.
+*
+* The previous scheme drew randomUInt(1, remaining) per agent and subtracted. That is a
+* uniform stick-break, so the pool halved on every draw and the holder count was
+* log2(pool) -- about 20 agents whether the run had 50 or 2000, with the largest holder
+* on 47% of the float and the top ten on 99.3%. It also left the float under-dispersed
+* below ~500 agents (61.5% of it existed at 5 agents) and only reached the intended pool
+* split at large populations.
+*/
+
+/* Institutional share of the float, drawn per run rather than fixed.
+*
+* Ownership structure differs from one company to the next, and this is the single
+* parameter that most shapes who can supply the sell side, so a constant here made every
+* market identical in exactly the wrong respect. Spread is RELATIVE, so the median moves
+* the whole band: 0.70 +/- 20% gives [0.56, 0.84], which brackets the institutional
+* ownership seen across real listed companies without reaching either extreme.
+*/
+inline constexpr double INST_FLOAT_SHARE_MEDIAN = 0.70;
+inline constexpr double INST_FLOAT_SHARE_SPREAD = 0.20;
+
+/* Lognormal sigma of the per-agent holding weight, per pool.
+*
+* Controls concentration WITHIN a pool only. The gap BETWEEN institutional and retail
+* holdings comes from the pool split divided by the population split and is unaffected by
+* these -- normalising against a pool cancels any difference in the weights' mean.
+*
+* Retail runs wider than institutional: a retail register is a very long tail of small
+* holders with occasional large ones, while institutional positions cluster harder.
+*/
+inline constexpr double HOLDING_WEIGHT_SIGMA_INST = 1.10;
+inline constexpr double HOLDING_WEIGHT_SIGMA_RETAIL = 1.50;
+
 /* ---- Sentiment persistence ----
 *
 * How long an agent holds an opinion. The model previously left this undefined: the OU
