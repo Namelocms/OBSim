@@ -287,6 +287,14 @@ public:
     double runTransientFraction = 0.0;
     /* Non-transient agents, the denominator the arrival rate scales against */
     int residentCount = 0;
+    /* Unit-dollars-to-money multiplier for this run's cash endowments
+    *
+    * Set by initAgents from the market cap and the population, and read again by
+    * rollTransientPersonality so an arriving transient is endowed on the same scale as the
+    * residents. 1.0 until initAgents runs, which is the identity, so anything driving the
+    * transient path without initAgents gets unit dollars rather than a silent zero.
+    */
+    double cashScale = 1.0;
     /* Sim time arrivals were last drawn for, the Poisson interval runs from here */
     double lastArrivalCheckMs = 0.0;
 

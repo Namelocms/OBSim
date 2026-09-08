@@ -101,6 +101,59 @@ inline constexpr double INST_FLOAT_SHARE_SPREAD = 0.20;
 inline constexpr double HOLDING_WEIGHT_SIGMA_INST = 1.10;
 inline constexpr double HOLDING_WEIGHT_SIGMA_RETAIL = 1.50;
 
+/* ---- Cash endowments ----
+*
+* The ranges below are a SHAPE, not an amount. They are drawn in "unit dollars" and then
+* multiplied by a single per-run scale, so that the population's expected total cash comes
+* out at CASH_TO_MARKET_CAP times the market cap. Only their ratios to one another matter.
+*
+* They used to be absolute dollars that ignored both obStartPrice and obShareFloat, so
+* total system cash scaled with agentStartCount while the float did not: 500 agents held
+* $36.8M against a $100,000 market cap, 368x more cash than there was stock to buy. The
+* price then revalued toward the cash-per-share ratio, which is the whole of the "strong
+* upward price drift". It was never a mechanism bug -- cash and shares are both exactly
+* conserved -- it was two parameters describing companies three orders of magnitude apart.
+*
+* One scale for all three ranges, applied AFTER each draw, so every relative relationship
+* survives untouched: institutions to retail, the retail small/large split, the uniform
+* shape inside each band, and the transient-to-resident ratio.
+*/
+
+/* Total cash the population holds, as a multiple of the float's value at the start price
+*
+* 1.0 means the population collectively holds as much cash as the stock is worth, i.e. a
+* balanced split between the only two things an agent can own. That is the NEUTRAL choice
+* rather than a tuned one: any other value decides in advance which way the price should
+* move to reach equilibrium, which is exactly the outside judgement that must not leak
+* into the agents. Verified empirically rather than assumed -- see DispersalPlan Step 2.
+*/
+inline constexpr double CASH_TO_MARKET_CAP = 1.0;
+
+/* Resident cash shape, in unit dollars. Small accounts are deliberately the common case.
+*
+* RETAIL_CASH_SMALL_SHARE is BOTH the probability of the small band and its weight in the
+* expected-mean calculation, so the draw and the scale can never disagree. It is compared
+* against the same roll that picked the subtype, so wealth and subtype stay correlated
+* exactly as they always have.
+*/
+inline constexpr double RETAIL_CASH_SMALL_SHARE = 0.75;
+inline constexpr double RETAIL_CASH_SMALL_MIN = 100.0;
+inline constexpr double RETAIL_CASH_SMALL_MAX = 1'000.0;
+inline constexpr double RETAIL_CASH_LARGE_MIN = 1'000.0;
+inline constexpr double RETAIL_CASH_LARGE_MAX = 40'000.0;
+inline constexpr double INST_CASH_MIN = 50'000.0;
+inline constexpr double INST_CASH_MAX = 500'000.0;
+
+/* Expected unit cash of one agent of each kind, derived from the bands above so that
+*  editing a band cannot silently leave the scale computed against the old one. */
+inline constexpr double retailUnitMeanCash() {
+	return RETAIL_CASH_SMALL_SHARE * (RETAIL_CASH_SMALL_MIN + RETAIL_CASH_SMALL_MAX) * 0.5
+		+ (1.0 - RETAIL_CASH_SMALL_SHARE) * (RETAIL_CASH_LARGE_MIN + RETAIL_CASH_LARGE_MAX) * 0.5;
+}
+inline constexpr double instUnitMeanCash() {
+	return (INST_CASH_MIN + INST_CASH_MAX) * 0.5;
+}
+
 /* ---- Sentiment persistence ----
 *
 * How long an agent holds an opinion. The model previously left this undefined: the OU

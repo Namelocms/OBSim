@@ -87,6 +87,7 @@ void CoreSim::run(SimClock& clock) {
 	this->lastArrivalCheckMs = 0.0;
 	this->residentCount = 0;
 	this->runTransientFraction = 0.0;
+	this->cashScale = 1.0;
 
 	//std::cout << "Initializing Agents..." << std::endl;
 	this->initAgents(this->parameters.agentStartCount);
@@ -255,6 +256,23 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 	// This should scale with stock cap (micro -> higher retail probability, Large cap -> more institution still high retail)
 	double percRetail = randomDouble(0.70, 1.00);
 
+	// ---- Cash scale ----
+	//
+	// The cash bands are a shape in unit dollars; this converts them into money for a
+	// market of this size. Drawn from the EXPECTED type mix, which is known here because
+	// percRetail has just been drawn -- the realised mix varies around it, so total cash
+	// varies around the target rather than landing on it exactly, which is wanted: not
+	// every market carries identical dry powder.
+	//
+	// Reads OB.currentPrice and OB.shareFloat rather than the parameters, since
+	// resetToInitial is what actually settles them (a shareFloat of 0 is randomised there).
+	double unitMeanPerAgent = percRetail * retailUnitMeanCash()
+		+ (1.0 - percRetail) * instUnitMeanCash();
+	double targetCash = CASH_TO_MARKET_CAP * this->OB.currentPrice * double(this->OB.shareFloat);
+	this->cashScale = (_agentStartCount > 0 && unitMeanPerAgent > 0.0)
+		? targetCash / (double(_agentStartCount) * unitMeanPerAgent)
+		: 1.0;
+
 	// Retail Agent SubType probabilities
 	double noiseType_R = randomDouble(0.30, 0.50);
 	double momentumType_R = randomDouble(noiseType_R+0.1, 0.88);
@@ -310,7 +328,11 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 			else { a_reactionTimeFloor = randomDouble(200.0, 3'600'000.0); }
 
 			// Agent Account Balances
-			a_accountCash = roll <= 0.75 ? randomDouble(100.0, 1000.0) : randomDouble(1000.0, 40'000.0); // Lower account balances 75% more likely
+			// Lower account balances 75% more likely. Scaled AFTER the draw, so the RNG
+			// stream and the wealth/subtype correlation are both exactly as before.
+			a_accountCash = this->cashScale * (roll <= RETAIL_CASH_SMALL_SHARE
+				? randomDouble(RETAIL_CASH_SMALL_MIN, RETAIL_CASH_SMALL_MAX)
+				: randomDouble(RETAIL_CASH_LARGE_MIN, RETAIL_CASH_LARGE_MAX));
 
 			// Claim on the retail pool. Normalised against the pool after the loop, so
 			// only the SPREAD of these matters, never their scale.
@@ -320,7 +342,7 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 			a_subType = roll <= algoType_I ? AgentSubType::ALGO : AgentSubType::INFORMED;
 			//															    0.001s, 0.1s			    0.2s    1hr
 			a_reactionTimeFloor = a_subType == AgentSubType::ALGO ? randomDouble(0.1, 1.0) : randomDouble(200.0, 3'600'000.0);
-			a_accountCash = randomDouble(50'000.0, 500'000.0); // TODO: Should be related to OB start price?
+			a_accountCash = this->cashScale * randomDouble(INST_CASH_MIN, INST_CASH_MAX);
 
 			// Claim on the institutional pool, tighter than retail: institutional
 			// positions cluster harder than a retail register's long tail.
@@ -971,7 +993,11 @@ bool CoreSim::rollTransientPersonality(std::shared_ptr<Agent> agent, double simT
 	agent->reactionTime = agent->reactionTimeFloor;
 	agent->idleReactionTimeFloor = 0.0;  // no ALGO backoff, transient agents are takers
 
-	agent->cash = randomDouble(TRANSIENT_CASH_MIN, TRANSIENT_CASH_MAX);
+	// Same scale as the residents. Transient agents arrive FLAT, which is settled and not
+	// reopened here -- but their cash is money, and money has to be denominated in the same
+	// market the residents live in or a transient is either a whale or an irrelevance
+	// depending only on how big the float happens to be.
+	agent->cash = this->cashScale * randomDouble(TRANSIENT_CASH_MIN, TRANSIENT_CASH_MAX);
 
 	// Arrives holding conviction, not neutral: it turned up wanting to trade. OU then
 	// pulls this back toward the market's neutral level over its tenure, which is what
