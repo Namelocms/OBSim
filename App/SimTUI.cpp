@@ -189,7 +189,7 @@ void SimTUI::run() {
                 unsigned newBackDataDays = toUInt(resetDraft_.backDataDays, 1);
                 Session  newLiveStart = sessionFromIdx_(resetDraft_.liveStartSessionIdx);
                 unsigned newMinLiquidity = toUInt(resetDraft_.minLiquidity, 0);
-                unsigned short newAgentCount = (unsigned short)toUInt(resetDraft_.agentCount, 100);
+                unsigned newAgentCount = toUInt(resetDraft_.agentCount, 100);
                 unsigned newShareFloat = toUInt(resetDraft_.shareFloat, 250000);
                 double   newStartPrice = toDbl(resetDraft_.startPrice, 1.0);
                 // Off means exactly off: a fraction of 0 skips the transient path entirely
@@ -917,6 +917,45 @@ Element SimTUI::buildResetDialog_() {
             }));
     }
     rows.push_back(text("  start price is safest at 2 decimals") | color(Color::GrayDark));
+
+    // ---- Derived population warning ----
+    //
+    // An agent count of 0 hands the population over to the market cap. That is a genuine
+    // option, not an error, but it is the one field whose value the user cannot see before
+    // pressing Enter -- and it is the field that decides how long the run takes and how
+    // much memory it needs. So show the number it will actually use, and the cost.
+    auto toDblSafe = [](const std::string& s, double def) -> double {
+        try { return std::stod(s); }
+        catch (...) { return def; }
+        };
+    if (toUIntSafe(resetDraft_.agentCount, 100) == 0) {
+        unsigned derived = derivedPopulation(
+            toDblSafe(resetDraft_.startPrice, 1.0),
+            toUIntSafe(resetDraft_.shareFloat, 250000));
+
+        // Roughly 0.8 ms per agent per simulated day, measured in Release. Deliberately
+        // the pessimistic end of the curve, since a warning that under-promises is useless.
+        double estSeconds = double(derived) * 0.0008 * std::max(1.0, totalMin / 1440.0);
+
+        rows.push_back(separator());
+        rows.push_back(text("  agent count 0 = derived from market cap")
+            | color(Color::Yellow) | bold);
+        rows.push_back(hbox({
+            text("  will use ") | color(Color::GrayDark),
+            text(std::to_string(derived) + " agents") | color(Color::Yellow) | bold,
+            text("  ~" + fmtDouble(estSeconds, 1) + "s back data") | color(Color::GrayDark),
+            }));
+        if (derived >= DERIVED_POPULATION_MAX) {
+            rows.push_back(text("  CAPPED: market is larger than the cap allows")
+                | color(Color::Red) | bold);
+        }
+        else if (derived <= DERIVED_POPULATION_MIN) {
+            rows.push_back(text("  FLOORED: market is too small to resolve further")
+                | color(Color::Red) | bold);
+        }
+        rows.push_back(text("  a bigger float means more agents, memory and time")
+            | color(Color::GrayDark));
+    }
 
     rows.push_back(separator());
     rows.push_back(hbox({

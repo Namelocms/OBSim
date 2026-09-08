@@ -240,7 +240,14 @@ void CoreSim::run(SimClock& clock) {
 
 // ---- Simulation Initialization Functions ----
 
-void CoreSim::initAgents(unsigned short _agentStartCount) {
+void CoreSim::initAgents(unsigned int _agentStartCount) {
+	// 0 asks for a population sized to the market rather than set by hand. Resolved here
+	// rather than in run(), so every caller gets it -- a test driving initAgents directly
+	// would otherwise build an empty market and divide by zero below.
+	if (_agentStartCount == 0) {
+		_agentStartCount = derivedPopulation(this->OB.currentPrice, this->OB.shareFloat);
+	}
+
 	// Everything this function creates is resident. The arrival rate scales against this
 	// count, so transient agents never breed more transient agents.
 	this->residentCount = _agentStartCount;
@@ -254,7 +261,7 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 
 	// Agent Type probabilities
 	// This should scale with stock cap (micro -> higher retail probability, Large cap -> more institution still high retail)
-	double percRetail = randomDouble(0.70, 1.00);
+	double percRetail = randomDouble(PERC_RETAIL_MIN, PERC_RETAIL_MAX);
 
 	// ---- Cash scale ----
 	//
@@ -303,7 +310,7 @@ void CoreSim::initAgents(unsigned short _agentStartCount) {
 	retailWeights.reserve(_agentStartCount);
 
 	// for each iteration
-	for (unsigned short i = 0; i < _agentStartCount; ++i) {
+	for (unsigned int i = 0; i < _agentStartCount; ++i) {
 		// Agent Type
 		a_type = randomDouble(0.0, 1.0) <= percRetail ? AgentType::RETAIL : AgentType::INSTITUTION;
 		
@@ -1094,7 +1101,7 @@ void CoreSim::drainWakeQueue(double simTimeMs) {
 
 // ---- Utility Functions ----
 
-void CoreSim::setParameters(unsigned int seed, unsigned int backDataDays, Session liveStartSession, unsigned int minLiquidity, unsigned short agentStartCount, unsigned int obShareFloat, double obStartPrice, double transientFraction) {
+void CoreSim::setParameters(unsigned int seed, unsigned int backDataDays, Session liveStartSession, unsigned int minLiquidity, unsigned int agentStartCount, unsigned int obShareFloat, double obStartPrice, double transientFraction) {
 
 	this->parameters.seed = seed;
 	this->parameters.backDataDays = backDataDays;

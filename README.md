@@ -77,6 +77,17 @@ _Why not use Monte-Carlo Simulations?_
 - [ ] API for order placements (for algos/AI)
 - [ ] Technical indicators maybe ablility for custom indicators?
 
+### Market Scale
+**An agent is a unit of resolution, not a person.** `Share Float × Start Price` says how big the market is; `Agent Start Count` says how finely that market is resolved. Every per-agent quantity — shares *and* cash — is then derived as market size ÷ resolution, never set as an absolute amount.
+
+This matters because it is the difference between a market that behaves and one that does not. If cash endowments are fixed dollar amounts, adding agents adds money to a market whose float never grew, and the price has nowhere to go but up until the two agree again. Denominating everything in market cap removes the contradiction at the source rather than damping its symptom.
+
+- **Share dispersal.** Each agent draws a lognormal weight and the float is apportioned against those weights, so the number of holders follows the population and the float is exhausted exactly at any size. The institutional share of the float is drawn per run rather than fixed, so ownership structure varies from market to market.
+- **Cash endowments.** The account-size bands are a *shape*, not an amount. One per-run scale converts them into money for a market of this size, so the population collectively holds about as much cash as the stock is worth. That balance point is where price is stationary — anything else would decide in advance which way price ought to move, which is a judgement that has no business inside the agents.
+- **Derived population.** Setting `Agent Start Count` to `0` sizes the population to the market cap instead, at roughly the point where the account bands read as literal dollars. The reset dialog shows the number it will use and an estimated back-data time before you commit, because a large float implies a lot of agents.
+
+Both dials stay independent on purpose. Resolution is yours to choose; market size is a separate question; and sweeping either one is a valid experiment.
+
 ### Market Sessions
 The simulation runs on a real US equity calendar. `t = 0` is 04:00 on day 0, and a day is 1440 clock minutes of which 960 are tradeable.
 
@@ -242,8 +253,8 @@ There are two ways to do this, one in code, the other in the TUI.
 | Back Data (days) | Whole prior days simulated headless before the live sim opens. `0` opens immediately |
 | Live Start Session | Which session the live simulation opens in, at that session's open |
 | Min Liquidity | Minimum resting orders per side required at handoff. `0` disables it |
-| Agent Start Count | Number of agents created at startup |
-| Share Float | Total shares dispersed among agents |
+| Agent Start Count | How finely the market is resolved, **not** a headcount of real investors. `0` derives it from the market cap — the dialog shows the number and an estimated runtime first |
+| Share Float | Total shares dispersed among agents. With Start Price this sets the market's size, and every per-agent cash and share amount is derived from it |
 | Start Price | Price at the **start of the back data**. The live opening price emerges from trading |
 | Transient Agents | Whether short-lived agents enter and leave during the run. Each run draws its own share of them. Off skips the path entirely |
 

@@ -27,7 +27,7 @@ struct Config {
     Session liveStartSession = Session::REGULAR;
     /* Minimum resting orders per side required at handoff, 0 disables the check */
     unsigned int minLiquidity = 0;
-    unsigned short agentStartCount = 100;
+    unsigned int agentStartCount = 100;
     unsigned int obShareFloat = 100'000;
     double obStartPrice = 1.00;
     /* MEDIAN share of the resident population that is transient, 0 disables
@@ -159,7 +159,7 @@ public:
 
     // ---- Simulation Initialization Functions ----
 
-    void initAgents(unsigned short _agentStartCount);
+    void initAgents(unsigned int _agentStartCount);
     /* Give an agent its apportioned starting position, with a plausible cost basis
     *
     * Split out of initAgents because the float can only be apportioned once every weight
@@ -322,7 +322,7 @@ public:
         unsigned int backDataDays = 1,
         Session liveStartSession = Session::REGULAR,
         unsigned int minLiquidity = 0,
-        unsigned short agentStartCount = 100,
+        unsigned int agentStartCount = 100,
         unsigned int obShareFloat = 250'000,
         double obStartPrice = 1.00,
         double transientFraction = 0.0

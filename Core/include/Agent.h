@@ -154,6 +154,54 @@ inline constexpr double instUnitMeanCash() {
 	return (INST_CASH_MIN + INST_CASH_MAX) * 0.5;
 }
 
+/* Share of the population that is retail, drawn per run */
+inline constexpr double PERC_RETAIL_MIN = 0.70;
+inline constexpr double PERC_RETAIL_MAX = 1.00;
+inline constexpr double expectedPercRetail() { return (PERC_RETAIL_MIN + PERC_RETAIL_MAX) * 0.5; }
+
+/* Expected unit cash of one agent before the type mix is known */
+inline constexpr double expectedUnitMeanCash() {
+	return expectedPercRetail() * retailUnitMeanCash()
+		+ (1.0 - expectedPercRetail()) * instUnitMeanCash();
+}
+
+/* ---- Derived population ----
+*
+* An agent is a RESOLUTION UNIT, not a person: shareFloat x startPrice says how big the
+* market is, agentStartCount says how finely it is resolved, and every per-agent quantity
+* is market size divided by resolution. The two dials are therefore independent on
+* purpose, and deriving one from the other is offered rather than imposed --
+* agentStartCount of 0 asks for a population sized to the market.
+*
+* The size chosen is the one at which the cash bands above stop being unit dollars and
+* become literal dollars -- for the EXPECTED type mix. A run that draws percRetail away
+* from its midpoint still gets total cash equal to the market cap, since that is what
+* cashScale exists to guarantee; it is the per-agent account that then reads larger or
+* smaller than the bands suggest. Reusing numbers already in the model as the definition
+* of a realistic account beats inventing a new constant for it.
+*
+* Deliberately a function of price and float ONLY, never of the seed. Population is a
+* configuration quantity, so the reset dialog must be able to show exactly what a run will
+* use before that run has drawn anything.
+*
+* Clamped at both ends. Below the floor the market is too thin to be worth simulating; the
+* ceiling exists because cost is roughly 0.8 ms per agent per simulated day, so 50,000
+* agents is about 40 seconds of back data per day and anything beyond that stops being
+* interactive. A clamped run is still coherent, it just no longer has cashScale at 1.0.
+*/
+inline constexpr unsigned int DERIVED_POPULATION_MIN = 25;
+inline constexpr unsigned int DERIVED_POPULATION_MAX = 50'000;
+
+inline unsigned int derivedPopulation(double startPrice, unsigned int shareFloat) {
+	double marketCap = startPrice * double(shareFloat);
+	if (!(marketCap > 0.0)) { return DERIVED_POPULATION_MIN; }
+
+	double n = marketCap / expectedUnitMeanCash();
+	if (n < double(DERIVED_POPULATION_MIN)) { return DERIVED_POPULATION_MIN; }
+	if (n > double(DERIVED_POPULATION_MAX)) { return DERIVED_POPULATION_MAX; }
+	return (unsigned int)(n + 0.5);
+}
+
 /* ---- Sentiment persistence ----
 *
 * How long an agent holds an opinion. The model previously left this undefined: the OU
