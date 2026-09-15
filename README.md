@@ -71,6 +71,7 @@ _Why not use Monte-Carlo Simulations?_
 - [x] Back data initialization: headless, time-bounded warm-up that builds real price history and a populated book before the live sim opens
 - [x] Transient agents: short-lived participants that arrive, trade for a drawn tenure, and leave again, on a recycled slot pool
 - [ ] Robust UI: A more refined UI for better UX and data displays, possibly web-based or using python
+- [ ] Short selling and margin — the missing half of the order model, and a prerequisite for calibrating price behavior (see Known Limitations)
 - [ ] Agent population composition refinement
 - [ ] Agent lifecycles and exit conditions
 - [ ] User order placements in UI
@@ -87,6 +88,8 @@ This matters because it is the difference between a market that behaves and one 
 - **Derived population.** Setting `Agent Start Count` to `0` sizes the population to the market cap instead, at roughly the point where the account bands read as literal dollars. The reset dialog shows the number it will use and an estimated back-data time before you commit, because a large float implies a lot of agents.
 
 Both dials stay independent on purpose. Resolution is yours to choose; market size is a separate question; and sweeping either one is a valid experiment.
+
+> The balance point is a **long-only** result. Cash and stock are the only two things an agent can hold today, which is what makes an even split the neutral one. Once short selling exists a position can be negative, and short proceeds, margin and borrow all move where price is stationary — so this is measured and correct for the market as it currently is, not a constant of nature. See Known Limitations.
 
 ### Market Sessions
 The simulation runs on a real US equity calendar. `t = 0` is 04:00 on day 0, and a day is 1440 clock minutes of which 960 are tradeable.
@@ -281,7 +284,27 @@ This is responsible for the user interface. It is where data from the `Core` is 
 - `tickHistory` grows unbounded across long back data spans, and the chart re-aggregates the whole history when the timeframe changes
 - Transient agent arrival rate, tenure and reaction times are hand-tuned starting values in the same class as the participation rates, not calibrated against real market data
 - Transient agents arrive holding no shares, so they must buy before they can sell. At steady state arrivals and departures balance, but the effect is measurable on the price path
-- Price drifts strongly upward over long runs, and does so with or without transient agents. Under investigation
+
+### The market is long-only, and price behavior is parked until it isn't
+**Every position in the simulation is long.** There is no short selling, no margin, and no borrow. `Agent::directionalBias` exists and is `+1` for every agent; `adversity()` and the transient departure logic are already written against it rather than against the sign of sentiment, so adding a short-side agent is a bias flip rather than a rewrite. But nothing sets it to `-1` yet.
+
+That single fact shapes more of the model's behavior than it first appears, because **an agent can only sell what it already owns**. Sell-side liquidity is therefore capped by the number of holders, and an agent holding nothing is structurally a buyer until it has bought something. Hunting the strong upward price drift came down to exactly this: the float used to reach only ~20 holders regardless of population, so most of the market could only buy, and that one-sided flow *was* the residual drift once the cash mismatch was accounted for.
+
+Several current results are therefore **conditional on long-only** and should be re-derived once shorts exist, not carried forward:
+
+- **The cash-to-market-cap balance point of 1.0.** It is the neutral value because cash and stock are the only two things an agent can hold, so holding as much cash as stock is the balanced split. A short position is negative stock, and short proceeds, margin requirements and borrow costs all move where price is stationary. The value is measured and correct — for a long-only market.
+- **Float conservation as currently stated.** Shares are never created today, and every test asserts the float is conserved exactly. Shorting manufactures synthetic supply, so that invariant becomes something like *long shares − short shares = float*, with borrow tracked separately.
+- **Holder count as the ceiling on sell-side depth.** Shorting removes the constraint at its root, which changes what the ownership distribution needs to achieve.
+- **The endowment sampling error** noted below, whose price effect was measured in a market where cash is the only buying power and holders the only selling power.
+
+**Deliberate decision: no further tuning of pricing, endowments or dispersal until the order model is complete.** Calibrating against half a market risks fitting the parameters to an artifact of the missing half and then having to unpick it. The mechanism bugs found so far have been fixed because they were defensibly wrong on their own terms — a stick-break that made holder count a `log₂` accident, dollar amounts that ignored the market's size — but anything that amounts to choosing how prices *should* behave waits for shorts.
+
+### Endowment sampling error at small populations
+The per-run cash scale is computed from the *expected* type mix, not the realised one. Institutional accounts carry roughly 50× retail's, so the binomial wobble in how many institutions a run actually drew leaks into the market's total purchasing power, by about `2 / √N`. Measured spread of total cash against market cap: **0.115–2.235 at 25 agents**, 0.441–1.618 at 100, 0.913–1.111 at 2,000.
+
+The magnitude is set by the agent count, which means a market's total buying power currently depends on how finely it was resolved — a contradiction of the resolution principle above. Its effect on price is real but a minority contributor and only at small populations: it explains 21% of the day-one price variance at 25 agents and 1% at 2,000.
+
+A fix is understood (rescale once more against the realised mix, and draw any wanted variation explicitly so it is independent of agent count) but **deferred with everything else until shorts land**, since it was measured in a long-only market.
 
 ## Contact
 Check out my [LinkedIn](https://www.linkedin.com/in/sean-coleman-974652270) or start a [discussion](https://github.com/Namelocms/OBSim/discussions) in this repo!
