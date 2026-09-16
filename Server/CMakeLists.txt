@@ -5,8 +5,10 @@
 add_library(ObSimServer
 	"Protocol.cpp"
 	"SimServer.cpp"
+	"UiServer.cpp"
 	"include/Protocol.h"
 	"include/SimServer.h"
+	"include/UiServer.h"
 )
 
 target_include_directories(ObSimServer

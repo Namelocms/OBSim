@@ -15,9 +15,12 @@
 #include "Agent.h"          // TRANSIENT_DEFAULT_FRACTION
 #include "SimSession.h"
 #include "SimServer.h"
+#include "UiServer.h"
 
 int main(int argc, char** argv) {
 	int port = 8787;
+	int uiPort = 8788;
+	bool serveUi = true;
 	SimParams params;
 	params.seed = 1;
 	params.backDataDays = 1;
@@ -36,6 +39,8 @@ int main(int argc, char** argv) {
 			return (i + 1 < argc) ? (unsigned int)std::strtoul(argv[++i], nullptr, 10) : fallback;
 			};
 		if (arg == "--port")        { port = (int)next((unsigned int)port); }
+		else if (arg == "--ui-port") { uiPort = (int)next((unsigned int)uiPort); }
+		else if (arg == "--no-ui")  { serveUi = false; }
 		else if (arg == "--seed")   { params.seed = next(params.seed); }
 		else if (arg == "--days")   { params.backDataDays = next(params.backDataDays); }
 		else if (arg == "--agents") { params.agentCount = next(params.agentCount); }
@@ -43,8 +48,8 @@ int main(int argc, char** argv) {
 		else if (arg == "--price" && i + 1 < argc) { params.startPrice = std::strtod(argv[++i], nullptr); }
 		else if (arg == "--no-transients") { params.transientFraction = 0.0; }
 		else if (arg == "--help") {
-			std::printf("OBSim_Server [--port N] [--seed N] [--days N] [--agents N]\n"
-				"             [--float N] [--price X] [--no-transients]\n");
+			std::printf("OBSim_Server [--port N] [--ui-port N] [--no-ui] [--seed N] [--days N]\n"
+				"             [--agents N] [--float N] [--price X] [--no-transients]\n");
 			return 0;
 		}
 	}
@@ -58,6 +63,17 @@ int main(int argc, char** argv) {
 	if (!server.start()) {
 		std::printf("could not bind 127.0.0.1:%d -- is something already listening?\n", port);
 		return 1;
+	}
+	// Serving the UI is optional. A bot, or a Vite dev server during development, wants the
+	// socket and nothing else -- and a missing build must not stop the engine running.
+	UiServer ui(serveUi ? findWebRoot(argv[0]) : std::string(), uiPort);
+	if (serveUi) {
+		if (ui.start()) {
+			std::printf("OBSim UI at %s (from %s)\n", ui.url().c_str(), ui.root().c_str());
+		} else {
+			std::printf("no built UI found -- run `npm run build` in Web/, "
+				"or use the Vite dev server\n");
+		}
 	}
 	std::printf("OBSim serving ws://127.0.0.1:%d\n", port);
 	std::printf("  seed %u, %u day(s) back data, %u agents, float %u, start $%.2f, transients %s\n",
@@ -75,6 +91,7 @@ int main(int argc, char** argv) {
 
 	std::printf("simulation finished, shutting down\n");
 	server.stop();
+	ui.stop();
 	session.stop();
 	return 0;
 }

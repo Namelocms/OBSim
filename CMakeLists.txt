@@ -33,9 +33,21 @@ FetchContent_Declare(ixwebsocket
   GIT_TAG v12.0.1
 )
 
-FetchContent_MakeAvailable(nlohmann_json ixwebsocket)
+# The desktop shell. Uses the system webview -- WebView2 on Windows, WKWebView on macOS,
+# WebKitGTK on Linux -- so the binary stays small and there is no bundled Chromium.
+set(WEBVIEW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WEBVIEW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WEBVIEW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(WEBVIEW_INSTALL_TARGETS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(webview
+  GIT_REPOSITORY https://github.com/webview/webview
+  GIT_TAG 0.12.0
+)
+
+FetchContent_MakeAvailable(nlohmann_json ixwebsocket webview)
 
 add_subdirectory(Core)
 add_subdirectory(Bridge)
 add_subdirectory(Server)
+add_subdirectory(Desktop)
 add_subdirectory(App)
