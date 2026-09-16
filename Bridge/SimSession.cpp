@@ -1,0 +1,388 @@
+#include "include/SimSession.h"
+
+#include <algorithm>
+#include <queue>
+
+#include "Agent.h"
+#include "Order.h"
+#include "OrderBook.h"
+#include "Enums.h"
+
+// ============================================================
+//  Construction
+// ============================================================
+
+SimSession::SimSession(CoreSim& sim, SimClock& clock)
+	: sim_(sim), clock_(clock) {
+	this->lastPublish_ = std::chrono::steady_clock::now();
+	this->lastAgentPublish_ = this->lastPublish_;
+}
+
+SimSession::~SimSession() {
+	this->stop();
+}
+
+// ============================================================
+//  Lifecycle
+// ============================================================
+
+void SimSession::start(const SimParams& params) {
+	this->stop();
+
+	this->sim_.setParameters(
+		params.seed, params.backDataDays, params.liveStartSession, params.minLiquidity,
+		params.agentCount, params.shareFloat, params.startPrice, params.transientFraction);
+
+	// Reset everything derived from the previous run, or the first frame of the new one
+	// reports the old one's trades and log lines.
+	{
+		std::lock_guard<std::mutex> lk(this->frameMtx_);
+		this->latestFrame_ = MarketFrame{};
+		this->hasFrame_ = false;
+		this->sequence_ = 0;
+		this->backData_ = BackDataProgress{};
+	}
+	{
+		std::lock_guard<std::mutex> lk(this->logMtx_);
+		this->pendingLogs_.clear();
+		this->pendingLogsDropped_ = 0;
+	}
+	this->lastTradeCount_ = 0;
+	this->everPublished_ = false;
+	this->lastPublish_ = std::chrono::steady_clock::now();
+	this->lastAgentPublish_ = this->lastPublish_;
+
+	this->sim_.onTick = [this]() { this->onTick_(); };
+	this->sim_.onIdle = [this]() { this->onIdle_(); };
+	this->sim_.onLog = [this](LogEntry e) { this->onLog_(e); };
+	this->sim_.onBackDataProgress = [this](BackDataProgress p) { this->onBackDataProgress_(p); };
+
+	this->finished_.store(false);
+	this->threadRunning_.store(true);
+	this->thread_ = std::thread([this]() {
+		this->sim_.run(this->clock_);
+		// One last frame so a consumer sees the final state rather than the second to last
+		this->publish_();
+		this->threadRunning_.store(false);
+		this->finished_.store(true);
+		});
+}
+
+void SimSession::stop() {
+	if (!this->thread_.joinable()) { return; }
+
+	// Order matters. Raise the flags first so the loop breaks out on its own terms, then
+	// unblock anything parked: a paused clock never returns from its own wait, and the
+	// back-data run only checks cancelRequested on an interval.
+	this->sim_.isRunning = false;
+	this->sim_.cancelRequested.store(true);
+	this->clock_.resume();
+
+	this->thread_.join();
+	this->threadRunning_.store(false);
+
+	// Only now is it safe to touch the queue -- we are the last thread standing. Swap
+	// rather than pop, which is O(1) against a queue that may hold every agent.
+	std::priority_queue<EventCall, std::vector<EventCall>, CompareEventCalls> empty;
+	std::swap(this->sim_.eventCallQueue, empty);
+
+	// Drop the callbacks so a later run cannot deliver into a half torn down session
+	this->sim_.onTick = nullptr;
+	this->sim_.onIdle = nullptr;
+	this->sim_.onLog = nullptr;
+	this->sim_.onBackDataProgress = nullptr;
+
+	this->sim_.cancelRequested.store(false);
+}
+
+void SimSession::restart(const SimParams& params) {
+	this->stop();
+	this->start(params);
+}
+
+// ============================================================
+//  Reading
+// ============================================================
+
+bool SimSession::latest(MarketFrame& out) const {
+	std::lock_guard<std::mutex> lk(this->frameMtx_);
+	if (!this->hasFrame_) { return false; }
+	out = this->latestFrame_;
+	return true;
+}
+
+unsigned long long SimSession::latestSequence() const {
+	std::lock_guard<std::mutex> lk(this->frameMtx_);
+	return this->hasFrame_ ? this->sequence_ : 0ull;
+}
+
+// ============================================================
+//  Controls
+// ============================================================
+
+void SimSession::pause() { this->clock_.pause(); }
+void SimSession::resume() { this->clock_.resume(); }
+
+void SimSession::togglePause() {
+	if (this->clock_.paused.load()) { this->clock_.resume(); }
+	else { this->clock_.pause(); }
+}
+
+void SimSession::step() {
+	if (!this->clock_.paused.load()) { this->clock_.pause(); }
+	this->clock_.step.store(true);
+}
+
+void SimSession::setSpeed(double multiplier) {
+	if (!(multiplier > 0.0)) { return; }
+	// Through setSpeed, not a bare store: it stores the new multiplier BEFORE rebasing,
+	// and rebasing against the old one leaves the target scaled wrong and produces the
+	// catch-up burst it exists to prevent.
+	this->clock_.setSpeed(multiplier);
+}
+
+void SimSession::setSentiment(double value) {
+	this->sim_.OB.marketNeutralSentiment = std::clamp(value, -1.0, 1.0);
+}
+
+void SimSession::nudgeSentiment(double delta) {
+	this->setSentiment(this->sim_.OB.marketNeutralSentiment + delta);
+}
+
+void SimSession::cancelBackData() {
+	this->sim_.cancelRequested.store(true);
+}
+
+// ============================================================
+//  Engine callbacks -- all on the sim thread
+// ============================================================
+
+void SimSession::onTick_() { this->maybePublish_(); }
+void SimSession::onIdle_() { this->maybePublish_(); }
+
+void SimSession::onLog_(LogEntry entry) {
+	std::lock_guard<std::mutex> lk(this->logMtx_);
+	if ((int)this->pendingLogs_.size() >= this->config.logLinesPerFrame) {
+		++this->pendingLogsDropped_;
+		return;
+	}
+	FrameLogLine line;
+	line.simTimeMs = entry.simTimeMs;
+	line.kind = entry.kind;
+	line.text = std::move(entry.text);
+	this->pendingLogs_.push_back(std::move(line));
+}
+
+void SimSession::onBackDataProgress_(BackDataProgress progress) {
+	{
+		std::lock_guard<std::mutex> lk(this->frameMtx_);
+		this->backData_ = progress;
+	}
+	// Back data is headless and fires no ticks, so without publishing from here a
+	// consumer would see nothing at all until the live loop started.
+	this->maybePublish_();
+}
+
+// ============================================================
+//  Publishing
+// ============================================================
+
+void SimSession::maybePublish_() {
+	if (!(this->config.framesPerSecond > 0.0)) { return; }
+
+	const auto now = std::chrono::steady_clock::now();
+	const double intervalMs = 1000.0 / this->config.framesPerSecond;
+	const double sinceMs = std::chrono::duration<double, std::milli>(now - this->lastPublish_).count();
+
+	// Always publish the first frame, so a consumer that connects to a quiet market is not
+	// left with nothing until something happens to trade.
+	if (this->everPublished_ && sinceMs < intervalMs) { return; }
+
+	this->publish_();
+}
+
+void SimSession::publish_() {
+	const auto now = std::chrono::steady_clock::now();
+
+	MarketFrame frame;
+	frame.simTimeMs = this->clock_.simTimeMs;
+	frame.epochSec = MarketCalendar::simTimeToEpochSec(frame.simTimeMs);
+
+	const OrderBook& ob = this->sim_.OB;
+	frame.currentPrice = ob.currentPrice;
+	frame.session = ob.session;
+	frame.marketNeutralSentiment = ob.marketNeutralSentiment;
+	frame.shareFloat = ob.shareFloat;
+	frame.tickCount = ob.tickCount;
+	frame.restingBids = ob.getNumBids();
+	frame.restingAsks = ob.getNumAsks();
+
+	frame.residentAgents = this->sim_.residentCount;
+	frame.liveTransients = this->sim_.liveTransientCount;
+	frame.totalAgents = frame.residentAgents + frame.liveTransients;
+	frame.transientFraction = this->sim_.runTransientFraction;
+
+	frame.speedMultiplier = this->clock_.speedMultiplier.load();
+	frame.paused = this->clock_.paused.load();
+	frame.running = this->sim_.isRunning.load();
+	frame.backDataRunning = this->sim_.backDataRunning.load();
+	frame.backDataAborted = this->sim_.backDataAborted;
+
+	this->fillBook_(frame);
+	this->fillTrades_(frame);
+
+	// Spread comes from the aggregated book rather than Snapshot, so it agrees with the
+	// ladder the frontend is drawing instead of being computed off a different read.
+	if (!frame.bids.empty() && !frame.asks.empty()) {
+		frame.spread = frame.asks.front().price - frame.bids.front().price;
+	}
+
+	// Roster on its own slower cadence
+	const double agentIntervalMs = (this->config.agentRowsPerSecond > 0.0)
+		? 1000.0 / this->config.agentRowsPerSecond : 0.0;
+	const double sinceAgentsMs =
+		std::chrono::duration<double, std::milli>(now - this->lastAgentPublish_).count();
+	if (agentIntervalMs > 0.0 && (!this->everPublished_ || sinceAgentsMs >= agentIntervalMs)) {
+		this->fillAgents_(frame);
+		this->lastAgentPublish_ = now;
+	}
+
+	{
+		std::lock_guard<std::mutex> lk(this->logMtx_);
+		frame.logs = std::move(this->pendingLogs_);
+		frame.logsDropped = this->pendingLogsDropped_;
+		this->pendingLogs_.clear();
+		this->pendingLogsDropped_ = 0;
+	}
+
+	{
+		std::lock_guard<std::mutex> lk(this->frameMtx_);
+		frame.backData = this->backData_;
+		frame.sequence = ++this->sequence_;
+		this->latestFrame_ = std::move(frame);
+		this->hasFrame_ = true;
+	}
+
+	this->lastPublish_ = now;
+	this->everPublished_ = true;
+}
+
+// ============================================================
+//  Frame contents
+// ============================================================
+
+void SimSession::fillBook_(MarketFrame& frame) const {
+	const int maxLevels = (this->config.bookDepthLevels > 0) ? this->config.bookDepthLevels : 0;
+	if (maxLevels == 0) { return; }
+
+	// Both queues are ordered best first, so equal prices are adjacent and a level is
+	// finished the moment the price changes. Walking them directly rather than through
+	// peekBestN because that returns the best N ORDERS -- several agents quoting one price
+	// would eat the depth and the ladder would show a handful of levels.
+	auto collect = [maxLevels](auto& queue, std::vector<BookLevel>& out) {
+		out.reserve(maxLevels);
+		for (const std::shared_ptr<Order>& order : queue) {
+			if (order == nullptr || order->status == OrderStatus::CANCELED) { continue; }
+			if (!out.empty() && out.back().price == order->price) {
+				out.back().volume += order->volume;
+				out.back().orders += 1;
+				continue;
+			}
+			if ((int)out.size() >= maxLevels) { break; }
+			BookLevel level;
+			level.price = order->price;
+			level.volume = order->volume;
+			level.orders = 1;
+			out.push_back(level);
+		}
+		};
+
+	collect(this->sim_.OB.bidQueue, frame.bids);
+	collect(this->sim_.OB.askQueue, frame.asks);
+}
+
+void SimSession::fillTrades_(MarketFrame& frame) {
+	const OrderBook& ob = this->sim_.OB;
+
+	long long since = ob.tickCount - this->lastTradeCount_;
+	if (since <= 0) {
+		this->lastTradeCount_ = ob.tickCount;   // a reset can move it backwards
+		return;
+	}
+
+	// The retained history is a window. If more trades executed between frames than it
+	// holds, the older ones are simply gone -- say so rather than silently shipping a
+	// shorter list and letting the client draw straight through the hole.
+	const long long retained = (long long)ob.tickHistory.size();
+	if (since > retained) {
+		frame.tradesDropped = since - retained;
+		since = retained;
+	}
+
+	frame.trades.reserve((size_t)since);
+	const size_t start = (size_t)(retained - since);
+	for (size_t i = start; i < ob.tickHistory.size(); ++i) {
+		frame.trades.push_back(ob.tickHistory[i]);
+	}
+
+	this->lastTradeCount_ = ob.tickCount;
+}
+
+void SimSession::fillAgents_(MarketFrame& frame) const {
+	frame.agentsIncluded = true;
+
+	// POOLED slots are skipped: they are empty seats waiting to be rerolled, not
+	// participants, and counting them would make the roster climb forever.
+	std::vector<std::shared_ptr<Agent>> residents, transients;
+	residents.reserve(this->sim_.OB.agents.size());
+	for (const auto& entry : this->sim_.OB.agents) {
+		const std::shared_ptr<Agent>& agent = entry.second;
+		if (agent == nullptr || agent->status == AgentStatus::POOLED) { continue; }
+		(agent->isTransient ? transients : residents).push_back(agent);
+	}
+
+	// Sorted, residents first. Two reasons, one visible and one not. The visible one: the
+	// default page does not churn as transients arrive and leave, and transient rows sit
+	// together at the end where they are worth watching. The other: unordered_map order is
+	// implementation defined and a rehash may change it, so sorting makes the roster
+	// deterministic rather than relying on this build happening to iterate in insertion
+	// order.
+	auto byId = [](const std::shared_ptr<Agent>& a, const std::shared_ptr<Agent>& b) {
+		return a->id < b->id;
+		};
+	std::sort(residents.begin(), residents.end(), byId);
+	std::sort(transients.begin(), transients.end(), byId);
+
+	const int cap = (this->config.agentRowCap > 0) ? this->config.agentRowCap : 0;
+	const int total = (int)(residents.size() + transients.size());
+	if (cap == 0) {
+		frame.agentsOmitted = total;
+		return;
+	}
+
+	frame.agents.reserve((size_t)std::min(cap, total));
+	const double nowMs = this->clock_.simTimeMs;
+
+	auto append = [&](const std::vector<std::shared_ptr<Agent>>& from) {
+		for (const std::shared_ptr<Agent>& agent : from) {
+			if ((int)frame.agents.size() >= cap) { return; }
+			FrameAgentRow row;
+			row.id = agent->id;
+			row.cash = agent->cash;
+			row.holdings = agent->getTotalHoldings();
+			row.numBids = (int)agent->activeBids.size();
+			row.numAsks = (int)agent->activeAsks.size();
+			row.sentiment = agent->sentiment;
+			row.status = agent->status;
+			row.type = agent->type;
+			row.subType = agent->subType;
+			row.isTransient = agent->isTransient;
+			row.isStranded = (agent->status == AgentStatus::LEAVING) && agent->isStranded(nowMs);
+			frame.agents.push_back(std::move(row));
+		}
+		};
+	append(residents);
+	append(transients);
+
+	frame.agentsOmitted = total - (int)frame.agents.size();
+}

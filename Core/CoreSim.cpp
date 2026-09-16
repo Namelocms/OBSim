@@ -113,6 +113,10 @@ void CoreSim::run(SimClock& clock) {
 		
 		// Handle Pause
 		while (clock.paused.load() && !clock.step.load()) {
+			// A paused sim still has state worth showing, and a frontend has no other way
+			// to learn it is paused: without this the last frame it holds still says
+			// running, and the pause indicator never appears.
+			if (this->onIdle) { this->onIdle(); }
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
 
@@ -138,6 +142,7 @@ void CoreSim::run(SimClock& clock) {
 			}
 
 			// Keep the clock and session readouts moving even with no trades
+			if (this->onIdle) { this->onIdle(); }
 			if (++quietSlices >= QUIET_TICKS_PER_REFRESH) {
 				quietSlices = 0;
 				if (this->onTick) { this->onTick(); }
@@ -200,6 +205,10 @@ void CoreSim::run(SimClock& clock) {
 			if (simTarget > clock.simTimeMs) {
 				clock.simTimeMs = std::min(simTarget, nextEventCall.callTime);
 			}
+
+			// Waiting, not working, and the engine is between operations -- the safest
+			// moment there is for a frontend to read coherent state.
+			if (this->onIdle) { this->onIdle(); }
 
 			double sleepMs = (nextEventCall.callTime - simTarget) / clock.speedMultiplier.load();
 			if (sleepMs > PACING_SLICE_MS) { sleepMs = PACING_SLICE_MS; }

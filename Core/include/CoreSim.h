@@ -147,6 +147,18 @@ public:
     MatchingEngine ME = MatchingEngine(this->OB);
     std::function<void(LogEntry)> onLog;
     std::function<void()> onTick;
+    /* Fired from the live loop whenever it is waiting rather than working
+    *
+    * onTick fires when a trade happens, which ties a frontend's update rate to how busy
+    * the market is: a sparse book at 1x can leave seconds between callbacks while the
+    * clock is visibly moving. This fires once per pacing slice instead, so a frontend can
+    * publish on its OWN cadence regardless of trade activity.
+    *
+    * Called between engine operations, when nothing is mid-mutation, which is the only
+    * moment the engine's state is coherent enough to read. Unset by default and unused by
+    * the terminal UI, so it costs a null check and changes nothing for existing callers.
+    */
+    std::function<void()> onIdle;
     /* Fired on an interval during the back-data run so the UI can show progress */
     std::function<void(BackDataProgress)> onBackDataProgress;
     /* True while the headless back-data run is in progress */
