@@ -50,6 +50,52 @@ inline constexpr double minutesToMs(double minutes) { return minutes * MS_PER_MI
 /* Convert milliseconds of sim time to minutes */
 inline constexpr double msToMinutes(double ms) { return ms / MS_PER_MINUTE; }
 
+// ---- Wall Clock Mapping ----
+
+/* Unix time of sim time 0, i.e. 04:00 UTC on Monday 1 January 2024
+*
+* Sim time is an offset in milliseconds and carries no date of its own. A chart with a
+* real time axis needs one, so this pins t = 0 to a concrete instant. Monday is chosen so
+* day 0 is a weekday, which is what a market day claims to be.
+*/
+inline constexpr double SIM_EPOCH_BASE_SEC = 1'704'081'600.0;
+
+/* Map sim time onto a Unix timestamp in seconds
+*
+* Exact, not approximate: a sim day is TOTAL_MINUTES_PER_DAY = 1440 minutes, so it is a
+* real 24 hour day and the mapping is a straight offset. t = 0 lands on 04:00, the
+* premarket open, and every session boundary lands on the wall clock time it is named for.
+*
+* Returns fractional seconds. Sim time resolves to milliseconds and finer, so rounding
+* here would quietly collapse trades that a caller may still want to tell apart. Whoever
+* is drawing decides the resolution -- floor to the bar interval -- rather than having it
+* decided for them.
+*
+* LOSSY below about a quarter of a microsecond, and unavoidably so. The base is ~1.7e9
+* seconds, where one ULP of a double is 2^-22 s (~0.00024 ms), so adding it spends most
+* of the mantissa on the date. Round tripping through epochSecToSimTime is therefore
+* accurate to ~0.0005 ms, not exact. That is three orders of magnitude finer than the
+* fastest agent cadence in the sim (institutional ALGO, 0.1-1 ms), so no two events can
+* collide -- but it means this value is for DRAWING. Anything that needs the real time of
+* a trade should carry simTimeMs itself rather than converting back.
+*
+* Two properties a caller should know before trusting the axis. Sim days run back to back
+* with no weekends or holidays, so consecutive days map to consecutive calendar days
+* including Saturdays. And a skipped overnight is a real gap in the series, not missing
+* data: nothing traded there because the window was never simulated.
+*/
+inline constexpr double simTimeToEpochSec(double simTimeMs) {
+	return SIM_EPOCH_BASE_SEC + (simTimeMs / 1000.0);
+}
+/* Map a Unix timestamp in seconds back to sim time, the inverse of simTimeToEpochSec
+*
+* For turning a time a viewer picked on the chart back into something the engine can be
+* asked about. Can return a negative value if given an instant before the run began.
+*/
+inline constexpr double epochSecToSimTime(double epochSec) {
+	return (epochSec - SIM_EPOCH_BASE_SEC) * 1000.0;
+}
+
 // ---- Day Operations ----
 
 /* Get the zero-based day the given sim time falls on */
