@@ -182,11 +182,6 @@ Snapshot OrderBook::getSnapshot(unsigned char depth) {
 	else {
 		snap.spread = 0.0;
 	}
-	snap.macd = 0.00;// TODO
-	snap.rsi = 0.00; // TODO
-	snap.vwap = 0.00;// TODO
-	snap.sma = 0.00; // TODO
-
 	return snap;
 }
 int OrderBook::getTick(int startTick) {
