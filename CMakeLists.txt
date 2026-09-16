@@ -48,6 +48,7 @@ FetchContent_MakeAvailable(nlohmann_json ixwebsocket webview)
 
 add_subdirectory(Core)
 add_subdirectory(Bridge)
+add_subdirectory(Web)
 add_subdirectory(Server)
 add_subdirectory(Desktop)
 add_subdirectory(App)

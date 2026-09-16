@@ -19,6 +19,7 @@ target_include_directories(ObSimServer
 target_link_libraries(ObSimServer
 	PUBLIC
 		Bridge
+		WebAssets
 		nlohmann_json::nlohmann_json
 		ixwebsocket
 )

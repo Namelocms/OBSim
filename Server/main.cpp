@@ -21,6 +21,7 @@ int main(int argc, char** argv) {
 	int port = 8787;
 	int uiPort = 8788;
 	bool serveUi = true;
+	std::string webRoot;   // empty serves the bundle compiled into this binary
 	SimParams params;
 	params.seed = 1;
 	params.backDataDays = 1;
@@ -41,6 +42,11 @@ int main(int argc, char** argv) {
 		if (arg == "--port")        { port = (int)next((unsigned int)port); }
 		else if (arg == "--ui-port") { uiPort = (int)next((unsigned int)uiPort); }
 		else if (arg == "--no-ui")  { serveUi = false; }
+		// Serve the UI off disk instead of the embedded copy, for iterating on it without
+		// a full rebuild. No argument means "find a build somewhere sensible".
+		else if (arg == "--web-root") {
+			webRoot = (i + 1 < argc && argv[i + 1][0] != '-') ? argv[++i] : findWebRoot(argv[0]);
+		}
 		else if (arg == "--seed")   { params.seed = next(params.seed); }
 		else if (arg == "--days")   { params.backDataDays = next(params.backDataDays); }
 		else if (arg == "--agents") { params.agentCount = next(params.agentCount); }
@@ -48,8 +54,9 @@ int main(int argc, char** argv) {
 		else if (arg == "--price" && i + 1 < argc) { params.startPrice = std::strtod(argv[++i], nullptr); }
 		else if (arg == "--no-transients") { params.transientFraction = 0.0; }
 		else if (arg == "--help") {
-			std::printf("OBSim_Server [--port N] [--ui-port N] [--no-ui] [--seed N] [--days N]\n"
-				"             [--agents N] [--float N] [--price X] [--no-transients]\n");
+			std::printf("OBSim_Server [--port N] [--ui-port N] [--no-ui] [--web-root DIR]\n"
+				"             [--seed N] [--days N] [--agents N] [--float N] [--price X]\n"
+				"             [--no-transients]\n");
 			return 0;
 		}
 	}
@@ -65,14 +72,17 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 	// Serving the UI is optional. A bot, or a Vite dev server during development, wants the
-	// socket and nothing else -- and a missing build must not stop the engine running.
-	UiServer ui(serveUi ? findWebRoot(argv[0]) : std::string(), uiPort);
+	// socket and nothing else -- and a build made without npm carries no UI at all, which
+	// must not stop the engine running.
+	UiServer ui(uiPort, webRoot);
 	if (serveUi) {
 		if (ui.start()) {
-			std::printf("OBSim UI at %s (from %s)\n", ui.url().c_str(), ui.root().c_str());
+			std::printf("OBSim UI at %s (%s)\n", ui.url().c_str(), ui.sourceDescription().c_str());
+		} else if (!ui.hasContent()) {
+			std::printf("no UI compiled into this build -- configure with npm available, "
+				"or pass --web-root DIR\n");
 		} else {
-			std::printf("no built UI found -- run `npm run build` in Web/, "
-				"or use the Vite dev server\n");
+			std::printf("could not serve the UI on port %d\n", uiPort);
 		}
 	}
 	std::printf("OBSim serving ws://127.0.0.1:%d\n", port);
