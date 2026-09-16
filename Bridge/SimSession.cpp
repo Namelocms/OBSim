@@ -402,12 +402,19 @@ void SimSession::fillAgents_(MarketFrame& frame) const {
 		return;
 	}
 
+	// Transients are few and are the rows that churn, so they get their places first and
+	// residents fill what is left. Truncating in display order instead would cut the
+	// transients off entirely the moment the resident population exceeds the cap -- which
+	// is exactly when someone is most likely to be watching for them.
+	const int transientTake = std::min((int)transients.size(), cap);
+	const int residentTake = std::max(0, cap - transientTake);
+
 	frame.agents.reserve((size_t)std::min(cap, total));
 	const double nowMs = this->clock_.simTimeMs;
 
-	auto append = [&](const std::vector<std::shared_ptr<Agent>>& from) {
+	auto append = [&](const std::vector<std::shared_ptr<Agent>>& from, int take) {
 		for (const std::shared_ptr<Agent>& agent : from) {
-			if ((int)frame.agents.size() >= cap) { return; }
+			if (take-- <= 0) { return; }
 			FrameAgentRow row;
 			row.id = agent->id;
 			row.cash = agent->cash;
@@ -423,8 +430,10 @@ void SimSession::fillAgents_(MarketFrame& frame) const {
 			frame.agents.push_back(std::move(row));
 		}
 		};
-	append(residents);
-	append(transients);
+	// Appended residents first so display order still reads residents then transients,
+	// even though transients were the ones guaranteed a place.
+	append(residents, residentTake);
+	append(transients, transientTake);
 
 	frame.agentsOmitted = total - (int)frame.agents.size();
 }
