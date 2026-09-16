@@ -6,6 +6,7 @@
 #include <chrono>
 #include <set>
 #include "Holding.h"
+#include "Enums.h" // OrderAction, for TradePrint::aggressor
 #include "Order.h" // for order queues
 #include "Snapshot.h"
 
@@ -16,9 +17,21 @@ enum class OrderType;
 enum class ID_TYPE;
 enum class Session;
 
-struct PriceTime {
+/* One executed trade, recorded at the moment the leg executes
+*
+* A sweep that walks several price levels produces one of these PER LEVEL, each carrying
+* the price that level actually traded at -- not a single post-sweep last price. This is
+* the stream a chart, a volume histogram and any VWAP are all built from, so it records
+* what happened rather than what the book looked like afterwards.
+*
+* `aggressor` is the side that crossed the spread to make the trade happen: BID when a
+* buyer lifted an offer, ASK when a seller hit a bid. The resting side is the opposite.
+*/
+struct TradePrint {
 	double price;
-	double time;
+	unsigned int volume;
+	double timeMs;
+	OrderAction aggressor;
 };
 struct CompareBid {
 public:
@@ -57,12 +70,17 @@ public:
 	unsigned int shareFloat;
 	/* Simulation Clock */
 	SimClock* clock;
-	/* Total amount of ticks from the start */
+	/* Executed trades since the start
+	*
+	* One per trade, NOT one per order completion -- an order that sweeps four price
+	* levels counts four. The names `tickCount` and `tickHistory` predate that meaning
+	* and are kept so the terminal UI needs no edit, but a "tick" here is a trade.
+	*/
 	long long tickCount;
 	/* The overall neutral sentiment value for all agents in the market */
 	double marketNeutralSentiment;
-	/* Log of price movements and their times */
-	std::vector<PriceTime> tickHistory;
+	/* Log of every executed trade, oldest first */
+	std::vector<TradePrint> tickHistory;
 	/* Priority set for bid limit orders */
 	std::set<std::shared_ptr<Order>, CompareBid> bidQueue;
 	/* Priority set for ask limit orders */
@@ -111,6 +129,19 @@ public:
 	void cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent> agent);
 	/* Order was filled, remove from queue, update status to CLOSED */
 	void fillOrder(std::shared_ptr<Order> order, int volFilled);
+	/* Record one executed trade leg and count it
+	*
+	* Called by the matching engine once per leg, from inside the matching loop where the
+	* execution price, the volume and the crossing side are all still known. The price is
+	* passed explicitly rather than read from currentPrice so the record cannot drift with
+	* the order in which a caller updates the last price.
+	*
+	* This is the ONLY place tickCount moves. It used to be incremented from fillOrder
+	* (which sees a resting order closing, and cannot know who crossed) plus a
+	* compensating push after each matching loop -- an arrangement that lost a print
+	* whenever a cash-constrained aggressor left its last leg partially filled.
+	*/
+	void recordTrade(double price, unsigned int volume, OrderAction aggressor);
 	/* Cancel every resting order whose expiry has been reached, return how many were expired
 	*
 	* Called when an expiring session boundary is crossed. Every cancellation goes

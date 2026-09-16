@@ -21,7 +21,6 @@ void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
 	unsigned int totalVolume = 0;
 	double tradeCost = 0.00;
 	double totalCost = 0.00;
-	bool finalLegClosedBoth = false;
 
 	auto it = this->OB.askQueue.begin();
 	while (it != this->OB.askQueue.end() && order->volume > 0) {
@@ -61,7 +60,7 @@ void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
 		order->volume -= tradeVol;
 
 		this->OB.fillOrder(bestAsk, tradeVol);
-		finalLegClosedBoth = (bestAsk->volume == 0 && order->volume == 0);
+		this->OB.recordTrade(bestAsk->price, tradeVol, OrderAction::BID);
 		if (bestAsk->volume == 0) {
 			it = this->OB.askQueue.erase(it);
 		}
@@ -69,13 +68,6 @@ void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
 	}
 
 	order->status = (order->volume > 0) ? OrderStatus::CANCELED : OrderStatus::CLOSED;
-
-	// Handle tick counting if bid order was filled (skip if the last leg already
-	// ticked via fillOrder() closing the resting order at the same instant)
-	if (order->volume == 0 && !finalLegClosedBoth) {
-		OB.tickCount++;
-		OB.tickHistory.push_back(PriceTime(OB.currentPrice, OB.clock->simTimeMs));
-	}
 
 	// Volume Weighted Average Price (VWAP) of shares bought for order
 	totalVolume = order->entryVolume - order->volume;
@@ -93,7 +85,6 @@ void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
 	unsigned int totalVolume = 0;
 	double tradeCost = 0.00;
 	double refund = 0.00;
-	bool finalLegClosedBoth = false;
 
 	auto it = this->OB.askQueue.begin();
 	while (it != this->OB.askQueue.end() && order->volume > 0) {
@@ -135,7 +126,7 @@ void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
 
 		order->volume -= tradeVol;
 
-		finalLegClosedBoth = (bestAsk->volume == 0 && order->volume == 0);
+		this->OB.recordTrade(bestAsk->price, tradeVol, OrderAction::BID);
 		if (bestAsk->volume == 0) {
 			it = this->OB.askQueue.erase(it);
 		}
@@ -155,13 +146,6 @@ void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
 	}
 	else {
 		order->status = OrderStatus::CLOSED;
-
-		// Handle tick counting if bid order was filled (skip if the last leg already
-		// ticked via fillOrder() closing the resting order at the same instant)
-		if (!finalLegClosedBoth) {
-			OB.tickCount++;
-			OB.tickHistory.push_back(PriceTime(OB.currentPrice, OB.clock->simTimeMs));
-		}
 	}
 }
 
@@ -177,7 +161,6 @@ void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
 	unsigned int totalVolume = 0;
 	double tradeCost = 0.00;
 	double totalCost = 0.00;
-	bool finalLegClosedBoth = false;
 
 	auto it = this->OB.bidQueue.begin();
 	while (it != this->OB.bidQueue.end() && order->volume > 0) {
@@ -214,7 +197,7 @@ void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
 		order->volume -= tradeVol;
 
 		this->OB.fillOrder(bestBid, tradeVol);
-		finalLegClosedBoth = (bestBid->volume == 0 && order->volume == 0);
+		this->OB.recordTrade(bestBid->price, tradeVol, OrderAction::ASK);
 		if (bestBid->volume == 0) {
 			it = this->OB.bidQueue.erase(it);
 		}
@@ -230,13 +213,6 @@ void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
 	}
 	else {
 		order->status = OrderStatus::CLOSED;
-
-		// Handle tick counting if bid order was filled (skip if the last leg already
-		// ticked via fillOrder() closing the resting order at the same instant)
-		if (!finalLegClosedBoth) {
-			OB.tickCount++;
-			OB.tickHistory.push_back(PriceTime(OB.currentPrice, OB.clock->simTimeMs));
-		}
 	}
 
 	// Volume Weighted Average Price (VWAP) of shares bought for order
@@ -254,7 +230,6 @@ void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
 	unsigned int tradeVol = 0;
 	unsigned int totalVolume = 0;
 	double tradeCost = 0.00;
-	bool finalLegClosedBoth = false;
 
 	auto it = this->OB.bidQueue.begin();
 	while (it != this->OB.bidQueue.end() && order->volume > 0) {
@@ -290,7 +265,7 @@ void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
 
 		order->volume -= tradeVol;
 
-		finalLegClosedBoth = (bestBid->volume == 0 && order->volume == 0);
+		this->OB.recordTrade(bestBid->price, tradeVol, OrderAction::ASK);
 		if (bestBid->volume == 0) {
 			it = this->OB.bidQueue.erase(it);
 		}
@@ -311,13 +286,6 @@ void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
 	}
 	else {
 		order->status = OrderStatus::CLOSED;
-
-		// Handle tick counting if bid order was filled (skip if the last leg already
-		// ticked via fillOrder() closing the resting order at the same instant)
-		if (!finalLegClosedBoth) {
-			OB.tickCount++;
-			OB.tickHistory.push_back(PriceTime(OB.currentPrice, OB.clock->simTimeMs));
-		}
 	}
 }
 

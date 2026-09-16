@@ -97,9 +97,17 @@ void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 		}
 		// The agent may be gone by the time its resting order is closed out
 		if (agent != nullptr) { agent->removeActiveOrder(order); }
-		this->tickCount++;
-		this->tickHistory.push_back(PriceTime(this->currentPrice, this->clock->simTimeMs));
 	}
+	// No trade is recorded here. A resting order closing is not the event worth
+	// recording -- the trade is, and this function cannot see who crossed to cause it
+	// nor whether the same leg also closed the aggressor. MatchingEngine::recordTrade
+	// is called once per leg instead, from where both are still known.
+}
+
+void OrderBook::recordTrade(double price, unsigned int volume, OrderAction aggressor) {
+	if (volume == 0) { return; }
+	this->tickCount++;
+	this->tickHistory.push_back(TradePrint(price, volume, this->clock->simTimeMs, aggressor));
 }
 
 unsigned int OrderBook::expireOrders(double nowMs) {
