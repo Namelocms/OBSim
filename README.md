@@ -4,7 +4,10 @@ _Full depth agent-based market modeling_
 
 ![C++](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
 ![CMake](https://img.shields.io/badge/CMake-%3E%3D3.31-blue.svg)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-blue.svg)
 ![Status](https://img.shields.io/badge/status-active--development-yellow.svg)
+
+<sub>The terminal UI. A screenshot of the desktop app is still to come.</sub>
 
 <img width="1904" height="1020" alt="OBSim070726_demo" src="https://github.com/user-attachments/assets/a9a05414-c5c6-45bc-a211-245d72065caa" />
 
@@ -18,17 +21,21 @@ _Full depth agent-based market modeling_
   - [Who is this for?](#who-is-this-for)
   - [Why is this different?](#why-is-this-different)
 - [Features](#features)
+- [Interfaces](#interfaces)
+  - [Desktop app](#desktop-app)
+  - [Browser](#browser)
+  - [Terminal UI](#terminal-ui)
+  - [The WebSocket API](#the-websocket-api)
 - [Performance](#performance)
 - [Architecture](#architecture)
   - [Core Components](#core-components)
 - [Getting Started](#getting-started)
   - [Prerequisites](#prerequisites)
+  - [Building](#building)
   - [Controls](#controls)
 - [Usage / Configuration](#usage--configuration)
   - [Changing Simulation Parameters](#changing-simulation-parameters)
 - [Project Structure](#project-structure)
-  - [Core](#core)
-  - [App](#app)
 - [Known Limitations](#known-limitations)
 - [Contact](#contact)
 
@@ -53,7 +60,7 @@ your trading to only market hours (how dumb!). OBSim takes a different approach 
 simulations allowing you to train whenever, and whatever you want while providing novel trading situations everytime. Without
 the reliance on limited historical data you are able to reduce the chances of overfitting any models and it allows AI to 
 be tested/trained without the worry of historical data leaking into their decision making.
-- Support for algorithmic or agent trading is rarely included. (_in-progress_)
+- Support for algorithmic or agent trading is rarely included. OBSim exposes a documented [WebSocket API](#the-websocket-api) that streams the trade-by-trade feed, book depth and agent state to any client you care to write — though placing orders through it is still to come.
 
 _Why not use Monte-Carlo Simulations?_
 - Monte-Carlo Simulations are great for getting a line chart distribution of where a price might go. What it cannot do however is provide an in-depth look at the real-time order book, allow simulated agents to directly effect the market, or offer anything besides the price line and value.
@@ -66,17 +73,20 @@ _Why not use Monte-Carlo Simulations?_
 - [x] Order Book: `std::set` based bid/ask queues, O(log N) operations, snapshot api
 - [x] Agents: NOISE, MOMENTUM, ALGO, INFORMED subtypes with differentiated reaction times and parameters (All semi-random for now)
 - [x] Simulation Clock: Pause, step-forward, speed-adjustable, deterministic via `SimClock` timestamps
+- [x] Desktop app: candlestick chart with volume, depth ladder, agent roster, event log and reset dialog, in a single self-contained executable
+- [x] Browser UI: the same page, served over loopback, so anything with a browser can watch a running simulation
 - [x] Terminal UI: Live candlestick chart, orderbook, agent table, event log, reset dialog using [FTXUI](https://github.com/ArthurSonzogni/FTXUI/tree/main)
+- [x] WebSocket API: a documented JSON protocol carrying the trade stream, book depth, agent state and sim controls
 - [x] Extended hours phases: premarket, regular, afterhours and overnight sessions on a real market calendar, with session-driven order rules and expiry
 - [x] Back data initialization: headless, time-bounded warm-up that builds real price history and a populated book before the live sim opens
 - [x] Transient agents: short-lived participants that arrive, trade for a drawn tenure, and leave again, on a recycled slot pool
-- [ ] Robust UI: A more refined UI for better UX and data displays, possibly web-based or using python
 - [ ] Short selling and margin — the missing half of the order model, and a prerequisite for calibrating price behavior (see Known Limitations)
 - [ ] Agent population composition refinement
 - [ ] Agent lifecycles and exit conditions
 - [ ] User order placements in UI
-- [ ] API for order placements (for algos/AI)
-- [ ] Technical indicators maybe ablility for custom indicators?
+- [ ] Order placement over the API (for algos/AI) — the protocol reserves the message, it is not implemented yet
+- [ ] Technical indicators, including custom ones — now a client-side job, since the API streams individual trades rather than finished candles
+- [ ] Tick-count bars in the web UI, alongside the time-based ones
 
 ### Market Scale
 **An agent is a unit of resolution, not a person.** `Share Float × Start Price` says how big the market is; `Agent Start Count` says how finely that market is resolved. Every per-agent quantity — shares *and* cash — is then derived as market size ÷ resolution, never set as an absolute amount.
@@ -125,6 +135,38 @@ The resident population is fixed for the life of a run, which makes activity a c
 - **Recycling.** Agents are never destroyed. A departed agent's slot returns to a pool and the next arrival revives it with a completely rerolled personality, so `OB.agents` reaches a high-water mark instead of growing. Slots are reused 10-20 times each over a few days.
 
 Toggle them from the reset dialog. Off is exactly off: the whole path is skipped and consumes no random draws, so a run reproduces one from before the feature existed.
+
+## Interfaces
+There are three ways to watch a simulation, and they are not three programs. All of them run the same engine and two of them load the same page over the same socket — the desktop app is the browser client in a window, not a separate product with separate capabilities.
+
+The engine sends **individual trades and periodic state frames**. Candles, timeframes and indicators are built by whoever is drawing, which is why any timeframe is available instantly and why a custom indicator is a client-side question rather than an engine feature.
+
+### Desktop app
+`OBSim_App.exe` — the main product. One file, about 2 MB, with the UI compiled into the binary. No install, no folder of assets beside it, no console window.
+
+- Candlestick chart with a volume histogram on a **real time axis**, seeded on open with the price history the back-data run already built
+- Depth ladder aggregated **by price level**, showing size and order count per level
+- Agent roster with a filter, live cash, holdings, resting orders and sentiment
+- Event log, session and clock readouts, speed and sentiment controls, and a reset dialog
+
+> **Needs the WebView2 runtime.** It ships with Microsoft Edge, so Windows 10 and 11 have it already and nothing needs installing. Older machines may not — if the app starts and no window appears, install the [WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/). It is deliberately **not** bundled: doing so would roughly double the download for the large majority of users who already have it.
+
+### Browser
+`OBSim_Server.exe` runs the same engine headless and serves the same UI at `http://127.0.0.1:8788`. Useful for watching a long run from another window, or on a machine where you would rather not open an app.
+
+The page takes `?server=host:port` to point it at an engine on a different port.
+
+### Terminal UI
+`OBSim_ConsoleApp.exe` — the original FTXUI interface, still supported and unchanged. It talks to the engine directly rather than over the socket, so it has no dependency on any of the above and runs anywhere a terminal does.
+
+### The WebSocket API
+The desktop app and the browser UI are both clients of a documented protocol on `ws://127.0.0.1:8787`, and so can anything else be. It is plain JSON so you can read it in a browser's network tab or write a bot against it without a schema.
+
+The server sends `hello` (the epoch base, session lengths and run parameters), `backfill` (the retained trade history, so a client joining mid-run can draw a chart), and then `frame` about 30 times a second: price, spread, session, book depth, agent rows, log lines and every trade since the previous frame. Clients send `pause`, `resume`, `step`, `speed`, `sentiment`, `backfill` and `reset`.
+
+Repeated data is sent as tuples rather than objects — a book level is `[price, volume, orders]`, a trade is `[epochSec, price, volume, side]` — and `hello` states those layouts so a client can check it agrees with the server. Everything binds `127.0.0.1` only and is unreachable from off the machine.
+
+> Order placement is **not** implemented. The protocol recognises an `order` message and refuses it by name, which reserves the shape so adding it later is a new message rather than a breaking change.
 
 ## Performance
 These are slightly outdated since this was done on the inital MVP, pre-TUI, but performance is comparable, if not better now.
@@ -190,62 +232,110 @@ Based on this correlation, the engine is highly predictable. If we were to scale
 </details>
 
 ## Architecture
+<sub>This diagram predates the web frontend and shows the engine and terminal UI only. The layering below is current.</sub>
+
 <img width="2220" height="1380" alt="OBSim Architecture" src="https://github.com/user-attachments/assets/e37f3d96-9e12-4a33-a463-2448f08510fc" />
+
+Dependencies point one way, which is the point: the engine knows nothing about any interface, and the interfaces are stacked on top of it rather than wired into it.
+
+```
+Core ─── Bridge ─── Server ─┬─ Desktop   (WebView2 window)
+ │                          └─ Web       (TypeScript UI, compiled into the binaries)
+ └────────────────────────── App         (FTXUI terminal UI, talks to Core directly)
+```
+
+`Core` and `Bridge` pull in no external libraries at all, so the engine and its publisher stay portable — and remain a candidate for a WebAssembly build later. The JSON and WebSocket libraries live only in `Server`, the webview only in `Desktop`, and FTXUI only in `App`.
 
 ### Core Components
 - OrderBook: Stores all simulation data, including agents, orders, etc. See [OrderBook.h](Core/include/OrderBook.h)
 - Matching Engine: Handles the matching of every order placed in the simulation. See [MatchingEngine.h](Core/include/MatchingEngine.h)
 - Agents: Represent the actors on the order book and hold their individual data, including cash, shares, etc. See [Agent.h](Core/include/Agent.h)
 - Orders: A unique instance holding all information related to each order placed by agents, including number of shares, cost, etc. See [Order.h](Core/include/Order.h)
+- SimSession: Owns the simulation thread and turns the engine's callbacks into snapshots a frontend can read from another thread. The engine has no internal locking, so frames are built on the sim thread and handed over as plain values. See [SimSession.h](Bridge/include/SimSession.h)
+- MarketFrame: One update, as a plain value with no references back into the engine — everything a frontend needs to draw a moment. See [MarketFrame.h](Bridge/include/MarketFrame.h)
+- Protocol: The JSON wire format, and the only place that parses input the project did not produce. See [Protocol.h](Server/include/Protocol.h)
 
 ## Getting Started
-#### TUI
-If you just want to try the project without the code, download the [latest release](https://github.com/Namelocms/OBSim/releases)
+If you just want to try the project without the code, download the [latest release](https://github.com/Namelocms/OBSim/releases).
+
 #### Prerequisites
 - CMake ≥3.31
-- C++20 Compiler
-- FTXUI is automatically fetched via CMake `FetchContent`
-- Clone into Visual Studio and build there
-    - x64-Release is recommended for best performance
-    - The `MVP_Benchmark_main.cpp` target is deprecated and should not be used
+- A C++20 compiler
+- **Node.js and npm**, to build the web UI. Everything else is fetched automatically by CMake `FetchContent` — FTXUI, IXWebSocket, nlohmann/json, webview and the WebView2 SDK
+- **The WebView2 runtime**, for the desktop app only. Already present on Windows 10 and 11 via Edge; see [Desktop app](#desktop-app) if yours is older
+
+> No Node? Configure with `-DOBSIM_BUILD_WEB=OFF`. Everything still builds and the engine still runs and serves its socket — the binaries simply carry no UI. The simulator is useful headless, and a bot does not need a chart.
+
+#### Building
+Clone and build with CMake, or open the folder in Visual Studio and build there. **x64-Release is strongly recommended** — Debug is roughly an order of magnitude slower and will mislead you about performance.
+
+The web UI is built as part of the normal build and compiled into the binaries, so there is no separate frontend step and nothing to ship beside the executable.
+
+| Target | What it is |
+| :--- | :--- |
+| `OBSim_App` | The desktop app. Engine, server and window in one file |
+| `OBSim_Server` | Headless engine + WebSocket API + the UI at `http://127.0.0.1:8788` |
+| `OBSim_ConsoleApp` | The terminal UI |
+
+<sub>`MVP_Benchmark_main.cpp` is deprecated and should not be used.</sub>
+
+To work on the UI itself, run a Vite dev server against a running engine for instant reloads:
+
+```
+OBSim_Server.exe --no-ui
+cd Web && npm install && npm run dev
+```
 
 #### Controls
-These are listed at the bottom left of the TUI as well.
+The same bindings work in the desktop app, the browser and the terminal UI.
 
 - `SPACE` = Pause/Resume
 - `S` = Take one step forward
 - `R` = Open simulation reset box
-- `Q` = Quit the simulation/Exit the program
 - `←/-` = Slow down time
 - `→/+` = Speed up time
-- `T` = Change tick aggregation
+- `T` = Cycle the chart timeframe
+- `,/.` = Shift market sentiment bearish/bullish
+- `ESC` = Close the reset dialog
+
+Terminal UI only:
+- `Q` = Quit
 - `A/D` = Scroll through agent pages
 - `ESC` = Cancel an in-progress back data build and return to the reset dialog
+
+The web UI has clickable controls for all of the above along the bottom, a filter box on the agent roster, and a chart you can pan and zoom — it stops auto-scrolling while you look around and resumes when you return to the live edge.
 
 ## Usage / Configuration
 The simulations use seeds to ensure each run with the same seed and **starting parameters** produce the same simulation runs every time.
 
 #### Changing Simulation Parameters
-There are two ways to do this, one in code, the other in the TUI.
+Three ways: in code, or from the reset dialog in either UI.
 1. In code:
 
     Use the `setParameters` function in `CoreSim.h`. This is used in `main.cpp` for simulation startup:
     ```cpp
     CoreSim sim;
     sim.setParameters(
-	    1,			// Seed
-	    1,			// Back Data (whole days)
-	    Session::REGULAR,	// Live Start Session, the live sim opens here
-	    0,			// Min Liquidity, 0 disables the check
-	    100,		// Agent Start Count
-	    250'000,		// Share Float
-	    1.00		// Start Price, the price at the START of the back data
+        1,                 // Seed
+        1,                 // Back Data (whole days)
+        Session::REGULAR,  // Live Start Session, the live sim opens here
+        0,                 // Min Liquidity, 0 disables the check
+        100,               // Agent Start Count
+        250'000,           // Share Float
+        1.00,              // Start Price, the price at the START of the back data
+        0.04               // Transient Agents, as a share of residents. 0 disables
     );
     ```
-2. In the TUI:
+2. In the desktop app or browser:
+
+    Press `R` or click **Reset run**, fill in the dialog, and press **Go**. The fields are prefilled with what is actually running, not with defaults, so you can change one thing and leave the rest alone.
+    - `Live Start` is a dropdown; everything else is typed.
+    - Be careful with the price option as it can sometimes cause the simulation to freeze and crash. Stick to just _**two decimal places**_ for now.
+    - Setting `Agent Count` to `0` tells you the population it will derive from the market cap before you commit.
+
+3. In the terminal UI:
 
     Press `R`, a dialog box will pop up, enter your desired start-up parameters, click enter.
-    - Be careful with the price option as it can sometimes cause the simulation to freeze and crash. Stick to just _**two decimal places**_ for now.
     - `Live Start` is cycled with `←`/`→` rather than typed.
     - The dialog shows the resulting span live, for example `1290 active min (1770 total)`.
 
@@ -264,24 +354,35 @@ There are two ways to do this, one in code, the other in the TUI.
 Note that back data consumes random draws, so a run is identified by the whole parameter set rather than the seed alone.
 
 ## Project Structure
-This project is split into two distinct sections: `Core` and `App` in order to keep related functions close together.
+Each folder is a build target, and each one depends only on those to its left. The engine has no idea any of the interfaces exist.
 
-#### Core
-This is where the simulation lives. All data, orders, agents, times, etc. are kept here.
+| Folder | What it is |
+| :--- | :--- |
+| `Core/` | The simulation. Agents, orders, the book, the matching engine, the clock and the market calendar. No external dependencies, no interface code |
+| `Bridge/` | Turns the engine's callbacks into self-contained snapshots a frontend can read from another thread, at a sane frame rate. Depends only on `Core` |
+| `Server/` | The JSON protocol, the WebSocket server, and an HTTP server for the UI. Also builds `OBSim_Server` |
+| `Web/` | The browser UI — TypeScript, no framework. Built by npm during the CMake build and compiled into the binaries |
+| `Desktop/` | `OBSim_App`: engine, servers and a WebView2 window. The desktop product |
+| `App/` | The FTXUI terminal UI. Reads `Core` directly and is independent of everything above |
 
-#### App
-This is responsible for the user interface. It is where data from the `Core` is sent to be viewed and interacted with by the user.
+#### Why the split
+`Bridge` exists because the engine has no internal locking and no notion of a frame. Something has to decide *when* a coherent snapshot exists and how often one is worth taking, and that is neither the simulation's job nor the UI's.
+
+Keeping `Core` and `Bridge` free of external dependencies is deliberate: it keeps the engine portable, keeps the terminal UI independent of the web stack, and leaves a WebAssembly build on the table.
 
 ## Known Limitations
 - Current agent behavior is semi-structured noise (_research in progress_)
-- TUI is limited in scope and ability
 - Agent composition/distribution needs fine-tuning
 - Price selection may need fine-tuning
-- There is no built-in way for a user to easily place orders themselves
+- There is no built-in way for a user to place orders themselves, in any interface, and none over the API either
 - Extended hours participation rates and the retail decay curve are hand-tuned starting values, not calibrated against real market data
 - Afterhours currently trades slightly faster per minute than premarket, a consequence of the decay starting at full rate while premarket builds from the overnight floor
 - Trade volume scales with agent count, so small populations produce a thin market. A few hundred agents or more is recommended for realistic behavior
-- `tickHistory` grows unbounded across long back data spans, and the chart re-aggregates the whole history when the timeframe changes
+- Trade history is kept in a bounded window (250,000 trades by default). A run long enough to exceed it can no longer backfill a chart all the way to its start, and says so rather than drawing a shortened history as if it were complete
+- The terminal UI is frozen at its current feature set. It still works and is still supported, but new interface work goes to the web UI, so the two will diverge over time
+- The desktop app needs the WebView2 runtime, which is present on Windows 10 and 11 but not bundled — see [Desktop app](#desktop-app)
+- No technical indicators are implemented yet. The data to compute them client-side is now streamed, but nothing draws them
+- The web chart offers time-based bars only. The terminal UI's tick-count bars are not there yet
 - Transient agent arrival rate, tenure and reaction times are hand-tuned starting values in the same class as the participation rates, not calibrated against real market data
 - Transient agents arrive holding no shares, so they must buy before they can sell. At steady state arrivals and departures balance, but the effect is measurable on the price path
 
