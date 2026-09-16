@@ -134,8 +134,14 @@ public:
     *
     * run() assigns this before the loop starts, but it is read from the UI thread and
     * from tests, so it must be false rather than indeterminate before run() is called.
+    *
+    * Atomic because it is genuinely shared: the sim thread runs the loop on it while a
+    * frontend raises it to ask the loop to stop. A plain bool here was a data race, and
+    * one that gets sharper with a frontend whose stop and reset arrive on a network
+    * thread rather than from a keystroke. backDataRunning and cancelRequested beside it
+    * were already atomic, so this closes the gap rather than opening a new idea.
     */
-    bool isRunning = false;
+    std::atomic<bool> isRunning{ false };
     bool shouldGetSnapshot = false;
     OrderBook OB;
     MatchingEngine ME = MatchingEngine(this->OB);
