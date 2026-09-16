@@ -111,6 +111,17 @@ public:
 	/* Sequence number of the most recent frame, 0 when none */
 	unsigned long long latestSequence() const;
 
+	/* Ask for a bulk copy of the retained trade history
+	*
+	* A client joining mid-run needs the chart backfilled, but the history lives in the
+	* engine and may only be read from the sim thread. So this does not read it: it queues
+	* a request, the next frame built fulfils it on the right thread, and takeBackfill
+	* collects the result. Asking again before the first is collected simply widens it.
+	*/
+	void requestBackfill(size_t maxTrades);
+	/* Collect a fulfilled backfill, clearing it. False when none is ready yet. */
+	bool takeBackfill(TradeBackfill& out);
+
 	// ---- Controls ----
 	//
 	// Safe to call from any thread: each one either touches an atomic on the clock or a
@@ -146,6 +157,8 @@ private:
 	void fillAgents_(MarketFrame& frame) const;
 	/* Move trades executed since the last frame into it, flagging any that were lost */
 	void fillTrades_(MarketFrame& frame);
+	/* Serve any outstanding backfill request. Sim thread only. */
+	void fulfilBackfill_();
 
 	CoreSim& sim_;
 	SimClock& clock_;
@@ -178,6 +191,16 @@ private:
 
 	/* tickCount as of the last frame, the cursor into the trade history */
 	long long lastTradeCount_ = 0;
+
+	/* Backfill request, fulfilled on the sim thread during publish_
+	*
+	* The count is the largest number of trades asked for since the last fulfilment; 0
+	* means nothing is outstanding.
+	*/
+	std::atomic<size_t> backfillWanted_{ 0 };
+	std::mutex backfillMtx_;
+	TradeBackfill backfillData_;
+	bool backfillReady_ = false;
 
 	std::chrono::steady_clock::time_point lastPublish_;
 	std::chrono::steady_clock::time_point lastAgentPublish_;

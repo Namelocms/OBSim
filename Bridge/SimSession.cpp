@@ -116,6 +116,47 @@ unsigned long long SimSession::latestSequence() const {
 	return this->hasFrame_ ? this->sequence_ : 0ull;
 }
 
+void SimSession::requestBackfill(size_t maxTrades) {
+	if (maxTrades == 0) { return; }
+	// Widen an outstanding request rather than replacing it, so two clients asking for
+	// different depths at once both get what they need from one capture.
+	size_t current = this->backfillWanted_.load();
+	while (maxTrades > current
+		&& !this->backfillWanted_.compare_exchange_weak(current, maxTrades)) {
+		// current is refreshed by the failed exchange
+	}
+}
+
+bool SimSession::takeBackfill(TradeBackfill& out) {
+	std::lock_guard<std::mutex> lk(this->backfillMtx_);
+	if (!this->backfillReady_) { return false; }
+	out = std::move(this->backfillData_);
+	this->backfillData_ = TradeBackfill{};
+	this->backfillReady_ = false;
+	return true;
+}
+
+void SimSession::fulfilBackfill_() {
+	const size_t wanted = this->backfillWanted_.exchange(0);
+	if (wanted == 0) { return; }
+
+	const OrderBook& ob = this->sim_.OB;
+	const size_t retained = ob.tickHistory.size();
+	const size_t take = (wanted < retained) ? wanted : retained;
+
+	TradeBackfill data;
+	data.tickCountAtCapture = ob.tickCount;
+	data.truncated = ((long long)take < ob.tickCount);
+	data.trades.reserve(take);
+	for (size_t i = retained - take; i < retained; ++i) {
+		data.trades.push_back(ob.tickHistory[i]);
+	}
+
+	std::lock_guard<std::mutex> lk(this->backfillMtx_);
+	this->backfillData_ = std::move(data);
+	this->backfillReady_ = true;
+}
+
 // ============================================================
 //  Controls
 // ============================================================
@@ -230,6 +271,7 @@ void SimSession::publish_() {
 
 	this->fillBook_(frame);
 	this->fillTrades_(frame);
+	this->fulfilBackfill_();
 
 	// Spread comes from the aggregated book rather than Snapshot, so it agrees with the
 	// ladder the frontend is drawing instead of being computed off a different read.

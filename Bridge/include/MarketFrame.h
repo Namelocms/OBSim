@@ -53,6 +53,22 @@ struct FrameLogLine {
 	std::string text;
 };
 
+/* A bulk copy of the retained trade history, for a client that joined mid-run
+*
+* Separate from MarketFrame because it is sent once on connect rather than every frame,
+* and because it is large: up to the whole retention window.
+*/
+struct TradeBackfill {
+	std::vector<TradePrint> trades;
+	/* Total trades executed over the run at the moment of capture. Compare against
+	*  trades.size() to see how much of the run the window still reaches back over. */
+	long long tickCountAtCapture = 0;
+	/* True when the history no longer reaches the start of the run, either because the
+	*  retention cap trimmed it or because the caller asked for fewer than it holds. A
+	*  chart should say "history begins here" rather than implying the run did. */
+	bool truncated = false;
+};
+
 struct MarketFrame {
 	// ---- Sequencing ----
 	/* Monotonic frame number, so a consumer can detect a gap it was never sent */
