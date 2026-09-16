@@ -490,7 +490,9 @@ void CoreSim::reportBackDataProgress(const SimClock& clock, long long eventsProc
 	p.totalMinutes = MarketCalendar::msToMinutes(clock.simTimeMs);
 	p.targetMinutes = MarketCalendar::msToMinutes(this->backDataTargetMs);
 	p.events = eventsProcessed;
-	p.ticks = (long long)this->OB.tickHistory.size();
+	// tickCount, not tickHistory.size(): the history is a bounded window now, so on a
+	// long enough run its size stops being the number of trades.
+	p.ticks = this->OB.tickCount;
 	p.extraDays = this->backDataExtraDays;
 	p.transientArrivals = this->transientArrivals;
 	p.transientFraction = this->runTransientFraction;

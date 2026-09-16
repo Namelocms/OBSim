@@ -1,5 +1,6 @@
 #pragma once
 #include <unordered_map>
+#include <deque>
 #include <memory>
 #include <cmath>
 #include <numeric>
@@ -27,6 +28,15 @@ enum class Session;
 * `aggressor` is the side that crossed the spread to make the trade happen: BID when a
 * buyer lifted an offer, ASK when a seller hit a bid. The resting side is the opposite.
 */
+/* Default ceiling on retained trade prints
+*
+* Sized so an ordinary multi-day run backfills a chart without ever truncating: a 3 day
+* run at 1,000 residents produces roughly 22,000 trades, so this holds about a month of
+* one. At 24 bytes a print that is ~6 MB, which is the point -- the history used to be
+* an unbounded vector and a long run grew it forever.
+*/
+inline constexpr std::size_t TICK_HISTORY_MAX = 250'000;
+
 struct TradePrint {
 	double price;
 	unsigned int volume;
@@ -79,8 +89,17 @@ public:
 	long long tickCount;
 	/* The overall neutral sentiment value for all agents in the market */
 	double marketNeutralSentiment;
-	/* Log of every executed trade, oldest first */
-	std::vector<TradePrint> tickHistory;
+	/* Retained trade prints, oldest first
+	*
+	* A deque, and trimmed from the front once it passes tickHistoryMax, so memory is
+	* bounded on an arbitrarily long run. It is therefore a WINDOW on the run's trades,
+	* not all of them -- tickCount remains the true total, and the two diverge once the
+	* cap is reached. Anything reporting how much has traded wants tickCount; anything
+	* drawing recent history wants this.
+	*/
+	std::deque<TradePrint> tickHistory;
+	/* Ceiling on retained prints, 0 disables trimming and restores unbounded growth */
+	std::size_t tickHistoryMax = TICK_HISTORY_MAX;
 	/* Priority set for bid limit orders */
 	std::set<std::shared_ptr<Order>, CompareBid> bidQueue;
 	/* Priority set for ask limit orders */
@@ -156,7 +175,11 @@ public:
 	std::string makeId(ID_TYPE type);
 	/* Get a snapshot of the current state of the Order Book */
 	Snapshot getSnapshot(unsigned char depth = 10);
-	/* Get current tick count from given start index in tickHistory */
+	/* Prints RETAINED since startTick, not trades since then
+	*
+	* Counts entries still held in tickHistory, so once the cap is reached this is a
+	* window length rather than a total. Use tickCount for the run's real trade count.
+	*/
 	int getTick(int startTick = 0);
 	/* Get the number of open bids resting in the book */
 	int getNumBids() const { return this->numBids; }

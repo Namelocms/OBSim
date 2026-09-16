@@ -108,6 +108,15 @@ void OrderBook::recordTrade(double price, unsigned int volume, OrderAction aggre
 	if (volume == 0) { return; }
 	this->tickCount++;
 	this->tickHistory.push_back(TradePrint(price, volume, this->clock->simTimeMs, aggressor));
+
+	// Trim from the front so the retained window stays bounded. A while rather than a
+	// single pop so that lowering the cap mid-run takes effect at once, instead of
+	// leaking one print per trade until it slowly catches up.
+	if (this->tickHistoryMax > 0) {
+		while (this->tickHistory.size() > this->tickHistoryMax) {
+			this->tickHistory.pop_front();
+		}
+	}
 }
 
 unsigned int OrderBook::expireOrders(double nowMs) {
