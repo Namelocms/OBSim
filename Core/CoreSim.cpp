@@ -181,6 +181,26 @@ void CoreSim::run(SimClock& clock) {
 			if (nextEventCall.callTime <= simTarget) { break; }
 			if (clock.paused.load()) { waitInterrupted = true; break; }
 
+			/* Let the reported clock FLOW through the wait rather than standing still
+			*  on the last event's time.
+			*
+			*  Nothing decides anything on simTimeMs in here: the event still fires when
+			*  pacing says so, on its own callTime, and the pop below assigns that time
+			*  regardless. What changes is only what a reader sees between events, which
+			*  with a sparse book at 1x was frozen for seconds at a stretch.
+			*
+			*  Clamped to callTime so time never runs past the event that is about to be
+			*  processed, which would make the clock go backwards on the next line.
+			*
+			*  Second, quieter benefit: rebaseWallClock() measures from simTimeMs, so a
+			*  pause taken mid-wait used to rebase against the PREVIOUS event's time and
+			*  throw away the progress already made through this wait. It now rebases
+			*  against where the clock actually is.
+			*/
+			if (simTarget > clock.simTimeMs) {
+				clock.simTimeMs = std::min(simTarget, nextEventCall.callTime);
+			}
+
 			double sleepMs = (nextEventCall.callTime - simTarget) / clock.speedMultiplier.load();
 			if (sleepMs > PACING_SLICE_MS) { sleepMs = PACING_SLICE_MS; }
 			std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(sleepMs));
