@@ -16,4 +16,8 @@ struct Features {
 	*  agent replaces its last attempt, an ALGO re-prices a quote the market has left behind
 	*  -- instead of cancelling and re-posting, or sitting on a stale quote. */
 	bool agentReplace = false;
+	/* OrderModelPlan Step 0.5: directionalBias is the sign of the agent's net position (0 when
+	*  flat) rather than +1 for everyone, and adversity is measured from where the position
+	*  opened rather than from the level of sentiment. Changes transient departures. */
+	bool adversityFromEntry = false;
 };

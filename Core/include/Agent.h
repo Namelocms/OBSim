@@ -438,18 +438,22 @@ public:
 	* it never had.
 	*/
 	double sentimentEwma = 0.0;
-	/* Which way this agent's book leans: +1 long biased, -1 short biased
+	/* The sign of this agent's position the last time it changed: +1 long, -1 short, 0 flat
 	*
-	* Sentiment on its own cannot say whether the market is going an agent's way, because
-	* that depends on which way the agent is positioned. Falling sentiment is adverse to a
-	* long and favourable to a short. Every stance relative calculation therefore goes
-	* through this rather than testing the sign of sentiment directly, so adding a short
-	* side agent later is a bias flip and not a rewrite.
-	*
-	* Nothing sets this to -1 yet. It is deliberately a double rather than a bool or an
-	* enum so a partially hedged agent can later sit somewhere between the two.
+	* Tracked only with Features::adversityFromEntry on, by notePositionChange, so that a
+	* position OPENING (from flat, or by flipping through zero) can be told apart from one
+	* merely being added to or trimmed. Not the live sign -- directionalBias() computes that.
 	*/
-	double directionalBias = 1.0;
+	int positionSign = 0;
+	/* sentimentEwma at the moment the current position opened
+	*
+	* The baseline adversity is measured from (OrderModelPlan Step 0.5): how far this agent's
+	* view has moved against its position SINCE IT TOOK IT, rather than where its view sits
+	* in absolute terms. The average rather than the instantaneous sentiment, because it is
+	* compared against the average later, and comparing unlike things would read the EWMA's
+	* own lag as a move. Meaningless while flat.
+	*/
+	double entrySentimentEwma = 0.0;
 	/* Rate of sentiment mean reversion toward OB.marketNeutralSentiment, per millisecond
 	*
 	* DERIVED from sentimentHalfLifeMs, never drawn directly. Drawing it directly is what
@@ -549,6 +553,26 @@ public:
 	* does not stall outside REGULAR where market orders are unavailable.
 	*/
 	void actFlatten();
+	/* Which way this agent is positioned: +1 long, -1 short, 0 flat
+	*
+	* Sentiment on its own cannot say whether the market is going an agent's way, because
+	* that depends on how the agent is positioned: falling sentiment is adverse to a long and
+	* favourable to a short. Every stance-relative calculation goes through this rather than
+	* testing the sign of sentiment, so a short position needs no special case anywhere.
+	*
+	* Derived from the position itself, never stored, so it cannot go stale -- a stored stance
+	* would leave an agent that went short trying to flatten by selling more. With
+	* Features::adversityFromEntry off it is +1 for everyone, exactly as the stored field it
+	* replaced always was. A double so a partly hedged agent could later sit in between.
+	*/
+	double directionalBias() const;
+	/* Record that this agent's position may have changed, after a fill
+	*
+	* Moves the adversity baseline when a position opens from flat or flips through zero,
+	* and leaves it alone when a position is added to or trimmed. Does nothing with
+	* Features::adversityFromEntry off.
+	*/
+	void notePositionChange();
 	/* Side this agent trades to open a position: BID when long biased, ASK when short */
 	OrderAction entrySide() const;
 	/* Side this agent trades to close one. Derived from directionalBias, never hardcoded,
@@ -572,11 +596,20 @@ public:
 	* Also advances sentimentEwma over the same elapsed interval.
 	*/
 	void updateSentiment();
-	/* How far the market has moved AGAINST this agent's stance lately, in [0, 1]
+	/* How far the market has moved AGAINST this agent's position, in [0, 1]
 	*
-	* Zero while the averaged sentiment is aligned with directionalBias or neutral, rising
-	* to one when it is fully opposed. Deliberately one sided: this measures adversity, not
-	* conviction, so a favourable market returns zero rather than a negative number.
+	* Deliberately one sided: this measures adversity, not conviction, so a favourable
+	* market returns zero rather than a negative number.
+	*
+	* With Features::adversityFromEntry ON (OrderModelPlan Step 0.5), measured from where the
+	* position opened: how far the averaged sentiment has moved against the position since
+	* entrySentimentEwma, so a view that has merely faded back toward neutral counts. Zero
+	* while flat, since there is nothing to be adverse to.
+	*
+	*     adversity = clamp(-bias * (sentimentEwma - entrySentimentEwma), 0, 1)
+	*
+	* OFF, the original level measure: zero while the averaged sentiment agrees with the
+	* stance or is neutral, rising to one when fully opposed. clamp(-bias * sentimentEwma, 0, 1)
 	*/
 	double adversity() const;
 	/* Convert the raw sentiment value into a usable OrderAction enum using the SoftMax function */

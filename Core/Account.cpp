@@ -27,6 +27,15 @@ unsigned long long longShares(const Agent& agent) {
 	return shares;
 }
 
+long long netShares(const Agent& agent) {
+	return (long long)longShares(agent);
+}
+
+bool canSellShort(const Agent& agent) {
+	(void)agent;
+	return false;
+}
+
 double equity(const Agent& agent, double price) {
 	return agent.cash + escrowedCash(agent) + double(longShares(agent)) * price;
 }

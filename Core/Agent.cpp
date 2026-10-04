@@ -230,11 +230,26 @@ void Agent::actFlatten() {
 	if (request.empty()) { return; }
 	this->broker.submit(request, shared_from_this());
 }
+double Agent::directionalBias() const {
+	if (!this->OB.features.adversityFromEntry) { return 1.0; }
+	long long net = Account::netShares(*this);
+	return (net > 0) ? 1.0 : (net < 0) ? -1.0 : 0.0;
+}
+void Agent::notePositionChange() {
+	if (!this->OB.features.adversityFromEntry) { return; }
+	long long net = Account::netShares(*this);
+	int sign = (net > 0) ? 1 : (net < 0) ? -1 : 0;
+	if (sign == this->positionSign) { return; }   // added to or trimmed, the baseline stays
+
+	// Opened from flat or flipped through zero: the new position is measured from here
+	if (sign != 0) { this->entrySentimentEwma = this->sentimentEwma; }
+	this->positionSign = sign;
+}
 OrderAction Agent::entrySide() const {
-	return (this->directionalBias >= 0.0) ? OrderAction::BID : OrderAction::ASK;
+	return (this->directionalBias() >= 0.0) ? OrderAction::BID : OrderAction::ASK;
 }
 OrderAction Agent::flattenSide() const {
-	return (this->directionalBias >= 0.0) ? OrderAction::ASK : OrderAction::BID;
+	return (this->directionalBias() >= 0.0) ? OrderAction::ASK : OrderAction::BID;
 }
 bool Agent::shouldAct(Session session, double simTimeMs) const {
 	// A pooled slot is not an agent right now, it is an empty seat
@@ -300,7 +315,10 @@ void Agent::updateSentiment() {
 }
 double Agent::adversity() const {
 	// Positive when the averaged sentiment agrees with the way this agent is positioned
-	double conviction = this->directionalBias * this->sentimentEwma;
+	double bias = this->directionalBias();
+	double conviction = this->OB.features.adversityFromEntry
+		? bias * (this->sentimentEwma - this->entrySentimentEwma)   // since the position opened
+		: bias * this->sentimentEwma;                               // in absolute terms
 
 	// Only the adverse direction counts, and only up to fully opposed
 	double adverse = -conviction;

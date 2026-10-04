@@ -26,6 +26,17 @@ double escrowedCash(const Agent& agent);
 /* Shares this account owns: those it holds plus those reserved in its open asks */
 unsigned long long longShares(const Agent& agent);
 
+/* Signed net position in shares: long minus short. Long only until OrderModelPlan Step 1.4. */
+long long netShares(const Agent& agent);
+
+/* Could this account open a short position right now?
+*
+* Always false until OrderModelPlan Step 1.4 builds short selling, where it becomes: margin
+* privileges, a locate, and buying power for the requirement. Read today only by the
+* transient arrival rule, whose bearish branch is therefore unreachable until then.
+*/
+bool canSellShort(const Agent& agent);
+
 /* What the account is worth at the given price
 *
 *     equity = cash + escrowedCash + longShares * price

@@ -1,5 +1,6 @@
 #include "include/CoreSim.h"
 #include "include/Agent.h"
+#include "include/Account.h"
 #include "include/Holding.h"
 #include "include/Enums.h"
 #include "include/Util.h"
@@ -474,6 +475,10 @@ void CoreSim::seedHolding(std::shared_ptr<Agent> agent, unsigned int shares) {
 	}
 
 	agent->upsertHolding(Holding(agent->getBetaPrice(basisPrice, side), shares));
+
+	// A starting position is a position opened at construction, measured from the view the
+	// agent was born with
+	agent->notePositionChange();
 }
 void CoreSim::rollRunTransientFraction() {
 	// Off is off, and draws nothing
@@ -951,6 +956,14 @@ void CoreSim::beginTransientDeparture(std::shared_ptr<Agent> agent, double simTi
 	const auto& entryOrders = (entry == OrderAction::BID) ? agent->activeBids : agent->activeAsks;
 	toCancel.reserve(entryOrders.size());
 	for (const auto& kv : entryOrders) { toCancel.push_back(kv.second); }
+
+	// A flat agent has nothing to close, so every order it has resting could only open a new
+	// position -- on either side, once agents can short. With the position-derived bias a
+	// flat agent's bias is 0, which entrySide reads as long, so the other side is added here.
+	if (this->OB.features.adversityFromEntry && agent->directionalBias() == 0.0) {
+		const auto& other = (entry == OrderAction::BID) ? agent->activeAsks : agent->activeBids;
+		for (const auto& kv : other) { toCancel.push_back(kv.second); }
+	}
 	for (const std::shared_ptr<Order>& order : toCancel) { this->broker.cancel(order, agent); }
 
 	// An agent that arrived, never filled, and left is already clean
@@ -1008,9 +1021,9 @@ bool CoreSim::rollTransientPersonality(std::shared_ptr<Agent> agent, double simT
 	agent->isTransient = true;
 	agent->incarnation++;
 
-	// Long biased, like every agent in the sim today. A future SHORT subtype sets this to
-	// -1 and everything below signs itself off it, arrival sentiment included.
-	agent->directionalBias = 1.0;
+	// Arrives flat, so there is no position and no baseline yet
+	agent->positionSign = 0;
+	agent->entrySentimentEwma = 0.0;
 
 	// Subtype, cumulative thresholds over one draw. ALGO is deliberately absent.
 	double roll = randomDouble(0.0, 1.0);
@@ -1047,8 +1060,22 @@ bool CoreSim::rollTransientPersonality(std::shared_ptr<Agent> agent, double simT
 	// Arrives holding conviction, not neutral: it turned up wanting to trade. OU then
 	// pulls this back toward the market's neutral level over its tenure, which is what
 	// makes "arrived keen, conviction faded, left" emerge rather than being scripted.
-	agent->sentiment = randomDouble(TRANSIENT_ARRIVAL_SENTIMENT_MIN, TRANSIENT_ARRIVAL_SENTIMENT_MAX)
-		* agent->directionalBias;
+	//
+	// The conviction is drawn as it always has been. Its SIGN depends on what the arrival can
+	// do about it: one that can only buy only turns up to buy, so it is bullish. One that can
+	// sell short might have come for either side, so its sign is drawn evenly about the
+	// market's neutral sentiment, which lets the market's mood tilt the split instead of a
+	// constant setting how many arrive short (OrderModelPlan Step 0.5). Nothing can short
+	// before Step 1.4, so until then every arrival takes the first branch and consumes the
+	// RNG it always did.
+	double conviction = randomDouble(TRANSIENT_ARRIVAL_SENTIMENT_MIN, TRANSIENT_ARRIVAL_SENTIMENT_MAX);
+	if (this->OB.features.adversityFromEntry && Account::canSellShort(*agent)) {
+		double side = (randomInt(0, 1) == 0) ? 1.0 : -1.0;
+		agent->sentiment = std::clamp(this->OB.marketNeutralSentiment + side * conviction, -1.0, 1.0);
+	}
+	else {
+		agent->sentiment = conviction;
+	}
 	agent->rollSentimentProcess();
 	agent->sentimentEwma = agent->sentiment;
 

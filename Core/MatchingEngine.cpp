@@ -149,6 +149,10 @@ double MatchingEngine::settleLeg(const std::shared_ptr<Order>& incoming, const s
 	this->OB.fillOrder(resting, volume);
 	this->OB.recordTrade(price, volume, incoming->side);
 
+	// A fill is the only thing that changes a net position, so it is where an opening is seen
+	incomingAgent->notePositionChange();
+	restingAgent->notePositionChange();
+
 	return cost;
 }
 
