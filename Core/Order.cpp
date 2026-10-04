@@ -44,6 +44,20 @@ std::vector<Holding> Order::getReturnableShares() {
 	}
 	return returnableShares;
 }
+std::vector<Holding> Order::trimReserved(unsigned int keep) {
+	std::vector<Holding> kept, released;
+	unsigned int remaining = keep;
+
+	for (const Holding& h : this->getReturnableShares()) {
+		unsigned int take = std::min(h.volume, remaining);
+		if (take > 0) { kept.push_back(Holding(h.price, take)); }
+		if (h.volume > take) { released.push_back(Holding(h.price, h.volume - take)); }
+		remaining -= take;
+	}
+
+	this->reservedShares = kept;
+	return released;
+}
 std::string Order::toString() const {
 	EnumStrings es;
 	std::string reserved_string = "";

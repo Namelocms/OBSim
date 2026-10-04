@@ -50,6 +50,13 @@ public:
 
 	/* Get unsold shares from the calling Order */
 	std::vector<Holding> getReturnableShares();
+	/* Shrink the reserved lots to exactly `keep` shares, returning the lots released
+	*
+	* Rebuilds reservedShares from the order's live lots (getReturnableShares), so afterwards
+	* the reserved lots total exactly the order's live size, which is the state a resize
+	* starts from. Used by a replace that changes an ask's size.
+	*/
+	std::vector<Holding> trimReserved(unsigned int keep);
 	/* Get information about the order as a string */
 	std::string toString() const;
 };

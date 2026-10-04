@@ -6,6 +6,7 @@
 #include "include/OrderBook.h"
 #include "include/Broker.h"
 #include "include/Account.h"
+#include <climits>
 #include "include/SimClock.h"
 #include "include/MarketCalendar.h"
 
@@ -138,7 +139,10 @@ void Agent::actRandom() {
 			this->broker.submit(request, shared_from_this());
 			break;
 		case OrderType::LIMIT:
-			if (this->subType == AgentSubType::ALGO && this->activeBids.size() > 0) { break; }
+			if (this->subType == AgentSubType::ALGO && this->activeBids.size() > 0) {
+				if (this->OB.features.agentReplace) { this->requoteStale(OrderAction::BID); }
+				break;
+			}
 			request = this->makeLimitBid();
 			if (request.empty()) { break; }
 			this->broker.submit(request, shared_from_this());
@@ -155,7 +159,10 @@ void Agent::actRandom() {
 			this->broker.submit(request, shared_from_this());
 			break;
 		case OrderType::LIMIT:
-			if (this->subType == AgentSubType::ALGO && this->activeAsks.size() > 0) { break; }
+			if (this->subType == AgentSubType::ALGO && this->activeAsks.size() > 0) {
+				if (this->OB.features.agentReplace) { this->requoteStale(OrderAction::ASK); }
+				break;
+			}
 			request = this->makeLimitAsk();
 			if (request.empty()) { break; }
 			this->broker.submit(request, shared_from_this());
@@ -176,6 +183,28 @@ void Agent::actFlatten() {
 	this->updateSentiment();
 
 	OrderAction side = this->flattenSide();
+	const auto& working = (side == OrderAction::BID) ? this->activeBids : this->activeAsks;
+
+	// With cancel/replace on, a single previous attempt is re-priced and re-sized in place:
+	// what a real trader working an exit does. It re-enters the book as a new order, so a
+	// marketable price executes at once exactly as a fresh order would.
+	if (this->OB.features.agentReplace && working.size() == 1) {
+		std::shared_ptr<Order> previous = working.begin()->second;
+		double price = this->getMarketablePrice(side);
+		if (price <= 0.0) { price = this->getBetaPrice(this->OB.currentPrice, side); }
+
+		unsigned int volume = 0;
+		if (side == OrderAction::ASK) {
+			volume = previous->volume + this->getTotalHoldings();
+		}
+		else {
+			// The previous attempt's escrow comes back to fund the new one
+			double available = Account::buyingPower(*this) + previous->price * previous->volume;
+			volume = (price > 0.0) ? (unsigned int)std::min(available / price, double(INT_MAX)) : 0u;
+		}
+		if (volume > 0 && this->broker.replace(previous, shared_from_this(), price, volume) != nullptr) { return; }
+		// A replace the account could not carry falls through to cancel and re-post
+	}
 
 	// Replace the previous attempt rather than posting beside it. A partially filled unwind
 	// order leaves a resting remainder, and adding another would split the position across
@@ -415,6 +444,23 @@ OrderRequest Agent::makeLimitAsk(bool forceAggressive, bool fullSize) {
 	request.volume = (unsigned int)chosenVol;
 	request.expiresAtMs = this->rollOrderExpiry(this->OB.clock->simTimeMs);
 	return request;
+}
+void Agent::requoteStale(OrderAction side) {
+	const auto& mine = (side == OrderAction::BID) ? this->activeBids : this->activeAsks;
+	if (mine.empty()) { return; }
+	std::shared_ptr<Order> quote = mine.begin()->second;
+
+	std::vector<std::shared_ptr<Order>> best = this->OB.peekBestN(side, 1);
+	if (best.empty() || best[0] == nullptr) { return; }
+
+	// How far behind the best price on its own side this quote sits, in ticks
+	double behind = (side == OrderAction::BID) ? (best[0]->price - quote->price) : (quote->price - best[0]->price);
+	if (behind <= ALGO_REPRICE_TICKS * this->OB.tickPrecision + 1e-12) { return; }
+
+	// Priced exactly as a fresh quote would be, sized as it already is
+	double price = (this->rollAggressive()) ? this->getMarketablePrice(side) : -1.0;
+	if (price <= 0.0) { price = this->getBetaPrice(this->OB.currentPrice, side); }
+	this->broker.replace(quote, shared_from_this(), price, quote->volume);
 }
 void Agent::cancelOrder() {
 	bool hasBids = !activeBids.empty();

@@ -36,6 +36,15 @@ inline constexpr double AGGRESSION_ALGO = 0.02;
 *  of the agent's normal price variance. This is the slippage cap. */
 inline constexpr double MARKETABLE_SLIP_SCALE = 0.50;
 
+/* ---- Re-quoting (OrderModelPlan Step 0.4, behind Features::agentReplace) ----
+*
+* How far behind the best price on its own side an ALGO's resting quote may fall, in ticks,
+* before the agent re-prices it with a replace rather than sitting on it. A quote at or near
+* the touch is doing its job; one the market has moved away from is not providing liquidity
+* anyone will take. A starting value, in the calibration register.
+*/
+inline constexpr int ALGO_REPRICE_TICKS = 2;
+
 /* ---- Extended hours participation ----
 *
 * Outside the regular session the market does not merely slow down, it has far
@@ -598,6 +607,14 @@ public:
 	OrderRequest makeMarketAsk();
 	/* Decide a random limit ask, see makeLimitBid for forceAggressive */
 	OrderRequest makeLimitAsk(bool forceAggressive = false, bool fullSize = false);
+	/* Re-price this agent's resting quote on one side if the market has left it behind
+	*
+	* ALGO only, and only with Features::agentReplace on. Prices the new quote exactly as a
+	* fresh one would be priced and keeps its size, through Broker::replace, so the quote
+	* moves to the back of its new level instead of being cancelled and re-posted. Does
+	* nothing when the quote is within ALGO_REPRICE_TICKS of the best price on its side.
+	*/
+	void requoteStale(OrderAction side);
 	/* Cancel a random order */
 	void cancelOrder();
 	/* Do nothing */

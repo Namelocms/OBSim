@@ -75,6 +75,8 @@ void CoreSim::run(SimClock& clock) {
 	
 	this->OB.resetToInitial(this->parameters.obStartPrice, this->parameters.obShareFloat, true);  // = OrderBook(clock, this->parameters.obStartPrice, this->parameters.obShareFloat);
 	this->OB.clock = &clock;
+	this->OB.features = this->parameters.features;
+	this->broker.stats = BrokerStats();
 
 	// The agents map was just cleared, so every pooled slot id in the free list is dangling
 	this->transientFreeList.clear();
@@ -1137,6 +1139,10 @@ void CoreSim::drainWakeQueue(double simTimeMs) {
 
 // ---- Utility Functions ----
 
+void CoreSim::setFeatures(const Features& features) {
+	this->parameters.features = features;
+	this->OB.features = features;
+}
 void CoreSim::setParameters(unsigned int seed, unsigned int backDataDays, Session liveStartSession, unsigned int minLiquidity, unsigned int agentStartCount, unsigned int obShareFloat, double obStartPrice, double transientFraction) {
 
 	this->parameters.seed = seed;

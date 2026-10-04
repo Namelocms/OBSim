@@ -16,6 +16,20 @@ std::shared_ptr<Order> Broker::submit(const OrderRequest& request, const std::sh
 	if (agent == nullptr || request.empty()) { return nullptr; }
 	if (request.side != OrderAction::BID && request.side != OrderAction::ASK) { return nullptr; }
 
+	// Measurement only, see BrokerStats. Read straight off the front of each set: a stale
+	// cancelled order sitting there skews a sample slightly and changes nothing.
+	if (!this->OB.bidQueue.empty() && !this->OB.askQueue.empty()) {
+		this->stats.spreadSum += (*this->OB.askQueue.begin())->price - (*this->OB.bidQueue.begin())->price;
+		++this->stats.spreadSamples;
+	}
+	std::shared_ptr<Order> order = this->place(request, agent);
+	if (order == nullptr) { ++this->stats.refused; }
+	else { ++this->stats.submitted; }
+	return order;
+}
+
+std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::shared_ptr<Agent>& agent) {
+
 	const bool isLimit = (request.type == OrderType::LIMIT);
 	if (isLimit && !(request.price > 0.0)) { return nullptr; }
 	if ((request.sessions & SESSIONS_ALL) == 0) { return nullptr; }
@@ -103,5 +117,84 @@ void Broker::killUnplaced(const std::shared_ptr<Order>& order, const std::shared
 }
 void Broker::cancel(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent) {
 	if (order == nullptr || agent == nullptr) { return; }
+	++this->stats.cancels;
+	this->stats.restedMsSum += this->OB.clock->simTimeMs - order->timestamp;
+	++this->stats.restedSamples;
 	this->OB.cancelOrder(order, agent);
+}
+
+std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent,
+	double newPrice, unsigned int newVolume) {
+
+	if (order == nullptr || agent == nullptr || order->agentId != agent->id) { return nullptr; }
+	if (order->status != OrderStatus::OPEN || order->type != OrderType::LIMIT) { return nullptr; }
+	if (newVolume == 0 || !(newPrice > 0.0)) { return nullptr; }
+
+	const bool isBid = (order->side == OrderAction::BID);
+	const auto& resting = isBid ? agent->activeBids : agent->activeAsks;
+	if (resting.find(order->id) == resting.end()) { return nullptr; }
+
+	const unsigned int oldVolume = order->volume;
+	const double oldPrice = order->price;
+	const bool priceChanged = (newPrice != oldPrice);
+	if (!priceChanged && newVolume == oldVolume) { return order; }
+
+	// ---- Can the account carry the new terms? Checked before anything moves. ----
+	const double oldEscrow = oldPrice * oldVolume;   // what cancelOrder would refund
+	const double newEscrow = roundTo(newPrice * newVolume);
+	if (isBid) {
+		if (newEscrow > Account::buyingPower(*agent) + oldEscrow + CASH_PRECISION) {
+			++this->stats.replacesRefused;
+			return nullptr;
+		}
+	}
+	else if (newVolume > oldVolume && (newVolume - oldVolume) > agent->getTotalHoldings()) {
+		++this->stats.replacesRefused;
+		return nullptr;
+	}
+
+	++this->stats.replaces;
+	this->stats.restedMsSum += this->OB.clock->simTimeMs - order->timestamp;
+	++this->stats.restedSamples;
+
+	// ---- Size decrease at the same price: keeps its place in the queue ----
+	// Volume is not part of the comparator key, so nothing needs re-sorting. Only a
+	// DECREASE: a same-price increase is new size joining the queue, and goes to the back.
+	if (!priceChanged && newVolume < oldVolume) {
+		if (isBid) { agent->updateCash(oldPrice * (oldVolume - newVolume)); }
+		else { for (const Holding& h : order->trimReserved(newVolume)) { agent->upsertHolding(h); } }
+		order->volume = newVolume;
+		++this->stats.replacesInPlace;
+		return order;
+	}
+
+	// ---- Price change or size increase: loses priority ----
+	// Out of the queue while its key is still the one it was sorted by
+	this->OB.removeFromQueue(order);
+
+	if (isBid) {
+		agent->updateCash(oldEscrow);
+		agent->updateCash(-newEscrow);
+	}
+	else if (newVolume < oldVolume) {
+		for (const Holding& h : order->trimReserved(newVolume)) { agent->upsertHolding(h); }
+	}
+	else {
+		std::vector<Holding> lots = order->getReturnableShares();
+		if (newVolume > oldVolume) {
+			std::vector<Holding> added = agent->removeHoldings(int(newVolume - oldVolume));
+			lots.insert(lots.end(), added.begin(), added.end());
+		}
+		order->reservedShares = lots;
+	}
+
+	order->price = newPrice;
+	order->volume = newVolume;
+	order->timestamp = this->OB.clock->simTimeMs;
+
+	// Re-enters as any new order would: trades if it has become marketable, rests the rest.
+	// It is still in the agent's active map, so if nothing of it rests it must leave there.
+	this->ME.match(order);
+	if (order->status != OrderStatus::OPEN) { agent->removeActiveOrder(order); }
+	return order;
 }

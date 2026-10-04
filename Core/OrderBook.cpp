@@ -104,6 +104,19 @@ void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 	// is called once per leg instead, from where both are still known.
 }
 
+bool OrderBook::removeFromQueue(const std::shared_ptr<Order>& order) {
+	if (order == nullptr) { return false; }
+	if (order->side == OrderAction::BID) {
+		if (this->bidQueue.erase(order) == 0) { return false; }
+		this->numBids--;
+	}
+	else {
+		if (this->askQueue.erase(order) == 0) { return false; }
+		this->numAsks--;
+	}
+	return true;
+}
+
 void OrderBook::recordTrade(double price, unsigned int volume, OrderAction aggressor) {
 	if (volume == 0) { return; }
 	this->tickCount++;

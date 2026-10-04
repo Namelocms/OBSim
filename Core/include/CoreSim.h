@@ -38,6 +38,8 @@ struct Config {
     * consuming no RNG, so a run with transient agents off reproduces a pre-feature run.
     */
     double transientFraction = 0.0;
+    /* Order model mechanisms switched on for this run, all off by default. See Features.h. */
+    Features features;
 
     /* ---- Derived back-data duration ----
     *
@@ -338,6 +340,12 @@ public:
 
     // ---- Utility Functions ----
 
+    /* Choose which order model mechanisms a run uses, from the next run() on
+    *
+    * Also applied to the book at once, so a harness that drives the engine without run()
+    * gets them too.
+    */
+    void setFeatures(const Features& features);
     void setParameters(
         unsigned int seed = 1,
         unsigned int backDataDays = 1,

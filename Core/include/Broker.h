@@ -55,6 +55,29 @@ struct OrderRequest {
 	bool empty() const { return this->volume == 0; }
 };
 
+/* What the broker has been asked to do over a run
+*
+* Measurement only: nothing reads these to make a decision, so they cannot change what the
+* market does. Exists so cancel/replace adoption (and later fees, margin, triggers) can be
+* reported as numbers rather than asserted. Reset at the start of every run.
+*/
+struct BrokerStats {
+	long long submitted = 0;
+	long long refused = 0;
+	long long cancels = 0;
+	long long replaces = 0;
+	/* Replaces that kept time priority (a size decrease) */
+	long long replacesInPlace = 0;
+	/* Replaces refused because the account could not carry the new order */
+	long long replacesRefused = 0;
+	/* Sum and count of how long an order had rested when it was cancelled or replaced, ms */
+	double restedMsSum = 0.0;
+	long long restedSamples = 0;
+	/* Sum and count of the spread seen as each order arrived, when both sides were quoted */
+	double spreadSum = 0.0;
+	long long spreadSamples = 0;
+};
+
 /* ---- Broker ----
 *
 * Sits between whoever decides to trade and the exchange (OrderBook + MatchingEngine), as a
@@ -69,6 +92,7 @@ class Broker {
 public:
 	OrderBook& OB;
 	MatchingEngine& ME;
+	BrokerStats stats;
 
 	Broker(OrderBook& ob, MatchingEngine& me);
 
@@ -82,8 +106,25 @@ public:
 	std::shared_ptr<Order> submit(const OrderRequest& request, const std::shared_ptr<Agent>& agent);
 	/* Cancel a resting order on its owner's behalf, returning its escrow */
 	void cancel(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent);
+	/* Change a resting limit order's price and/or size, under exchange priority rules
+	*
+	* A size DECREASE at the same price keeps time priority: the order shrinks in place and
+	* the released escrow comes back. A PRICE CHANGE or a size INCREASE loses it: the order
+	* leaves the queue, takes the current time as its timestamp, and re-enters exactly as a
+	* new order would -- so a replace that has become marketable executes immediately, and
+	* whatever is left rests at the back of its new price level.
+	*
+	* Keeps the order's id, time-in-force, expiry and sessions. Returns the order, or nullptr
+	* having changed nothing if it is not this agent's resting limit order, the new terms are
+	* malformed, or the account cannot carry them. A request that changes nothing returns the
+	* order untouched.
+	*/
+	std::shared_ptr<Order> replace(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent,
+		double newPrice, unsigned int newVolume);
 
 private:
+	/* Everything submit does except the measurement around it */
+	std::shared_ptr<Order> place(const OrderRequest& request, const std::shared_ptr<Agent>& agent);
 	/* Kill an order that never reached the book, returning the escrow submit reserved for it.
 	*  Uses the same refund arithmetic as OrderBook::cancelOrder so the two paths agree. */
 	void killUnplaced(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent);

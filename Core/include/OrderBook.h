@@ -11,6 +11,7 @@
 #include "Order.h" // for order queues
 #include "Snapshot.h"
 #include "Ledger.h"
+#include "Features.h"
 
 class Agent;
 class SimClock;
@@ -117,6 +118,8 @@ public:
 	std::vector<std::string> wakeQueue;
 	/* Every dollar that enters, leaves, or moves outside a trade. See Ledger.h. */
 	Ledger ledger;
+	/* Which order model mechanisms are switched on. Configuration, so a reset keeps it. */
+	Features features;
 
 	OrderBook() = default;
 	OrderBook(double currentPrice, unsigned int shareFloat = 0);
@@ -151,6 +154,13 @@ public:
 	void cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent> agent);
 	/* Order was filled, remove from queue, update status to CLOSED */
 	void fillOrder(std::shared_ptr<Order> order, int volFilled);
+	/* Take a resting order out of its queue without cancelling it or touching its escrow
+	*
+	* For a replace that loses priority: the order has to leave the set while its price and
+	* timestamp are still the ones it was sorted by, or the erase misses. Returns whether it
+	* was there. The caller re-enters it, through matching, once its new key is set.
+	*/
+	bool removeFromQueue(const std::shared_ptr<Order>& order);
 	/* Record one executed trade leg and count it
 	*
 	* Called by the matching engine once per leg, from inside the matching loop where the
