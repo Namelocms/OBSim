@@ -227,5 +227,33 @@ inline double nextExpiryBoundaryMs(double simTimeMs) {
 	// PREMARKET (and reserved CLOSED) roll forward to the regular close
 	return dayStartMs(dayIndex(simTimeMs)) + sessionOffsetMs(Session::REGULAR) + sessionLengthMs(Session::REGULAR);
 }
+/* Get the sim time a DAY order placed at simTimeMs expires, given the sessions it may trade in
+*
+* The close of the LAST session in the mask on the trading day the order belongs to: the
+* regular close for a regular-session order, the afterhours close for an extended-hours
+* one, the following 04:00 for one that may trade overnight. A sim day runs from its 04:00
+* premarket open through the end of its overnight, so "the day" is dayIndex(simTimeMs).
+*
+* If that close has already passed -- a regular-session order placed afterhours -- the
+* order belongs to the next trading day and lives to that day's close, as a broker treats
+* a day order entered after the session it is for.
+*
+* Every value returned is the end of a session, so it coincides with a boundary the
+* engine already processes. Returns simTimeMs itself for an empty mask, which no valid
+* order has.
+*/
+inline double dayOrderExpiryMs(double simTimeMs, SessionMask sessions) {
+	const Session latestFirst[] = { Session::OVERNIGHT, Session::AFTERHOURS, Session::REGULAR, Session::PREMARKET };
+
+	for (int day = dayIndex(simTimeMs); day <= dayIndex(simTimeMs) + 1; ++day) {
+		for (Session session : latestFirst) {
+			if ((sessions & sessionBit(session)) == 0) { continue; }
+			double closeMs = sessionOpenMs(session, day) + sessionLengthMs(session);
+			if (closeMs > simTimeMs) { return closeMs; }
+			break; // the latest eligible session of this day is already over, try the next day
+		}
+	}
+	return simTimeMs;
+}
 
 }

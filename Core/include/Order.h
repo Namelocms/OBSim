@@ -3,6 +3,7 @@
 #include <vector>
 #include <algorithm>
 #include <chrono>
+#include "Enums.h" // TimeInForce and SessionMask, needed complete for the defaults below
 
 class Holding;
 class EnumStrings;
@@ -25,6 +26,10 @@ public:
 	/* Sim time this order is cancelled at, set from the expiring session boundary it was rolled for.
 	*  Only meaningful for limit orders, market orders never rest in the book. */
 	double expiresAtMs;
+	/* How long this order lives and whether it may rest. See TimeInForce. */
+	TimeInForce tif;
+	/* Sessions this order may trade in. Outside them it rests but is not matched. */
+	SessionMask sessions;
 
 	Order() = default;
 	Order(
@@ -36,8 +41,12 @@ public:
 		const OrderAction side,
 		const OrderType type,
 		std::vector<Holding> reservedShares = {},
-		double expiresAtMs = 0.0
+		double expiresAtMs = 0.0,
+		TimeInForce tif = TimeInForce::GTD,
+		SessionMask sessions = SESSIONS_ALL
 	);
+	/* May this order trade in the given session? */
+	bool eligibleIn(Session session) const { return (this->sessions & sessionBit(session)) != 0; }
 
 	/* Get unsold shares from the calling Order */
 	std::vector<Holding> getReturnableShares();

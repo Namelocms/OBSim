@@ -25,7 +25,12 @@ template <typename Queue>
 double MatchingEngine::sweep(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent, Queue& opposite) {
 	const bool isBid = (order->side == OrderAction::BID);
 	const bool isLimit = (order->type == OrderType::LIMIT);
+	const Session session = this->OB.session;
 	double totalCost = 0.00;
+
+	// An order outside its sessions does not match at all. A limit order rests until its
+	// session comes round; anything that may not rest is cancelled by finishIncoming.
+	if (!order->eligibleIn(session)) { return totalCost; }
 
 	auto it = opposite.begin();
 	while (it != opposite.end() && order->volume > 0) {
@@ -41,6 +46,13 @@ double MatchingEngine::sweep(const std::shared_ptr<Order>& order, const std::sha
 		// Clean stagnant canceled orders
 		if (resting->status == OrderStatus::CANCELED) {
 			it = opposite.erase(it);
+			continue;
+		}
+
+		// A resting order outside its sessions stays in the book and is stepped over, so the
+		// book can legitimately sit crossed until its session (or the opening cross) arrives
+		if (!resting->eligibleIn(session)) {
+			++it;
 			continue;
 		}
 
@@ -72,6 +84,35 @@ double MatchingEngine::sweep(const std::shared_ptr<Order>& order, const std::sha
 	}
 
 	return totalCost;
+}
+
+unsigned int MatchingEngine::fillableVolume(const std::shared_ptr<Order>& order) const {
+	if (order == nullptr) { return 0; }
+	return (order->side == OrderAction::BID)
+		? this->fillableFrom(order, this->OB.askQueue)
+		: this->fillableFrom(order, this->OB.bidQueue);
+}
+
+template <typename Queue>
+unsigned int MatchingEngine::fillableFrom(const std::shared_ptr<Order>& order, const Queue& opposite) const {
+	const bool isBid = (order->side == OrderAction::BID);
+	const bool isLimit = (order->type == OrderType::LIMIT);
+	const Session session = this->OB.session;
+	if (!order->eligibleIn(session)) { return 0; }
+
+	unsigned long long fillable = 0;
+	for (const std::shared_ptr<Order>& resting : opposite) {
+		if (isLimit) {
+			bool crosses = isBid ? (resting->price <= order->price) : (resting->price >= order->price);
+			if (!crosses) { break; }
+		}
+		if (resting->status == OrderStatus::CANCELED) { continue; }
+		if (!resting->eligibleIn(session)) { continue; }
+		if (resting->agentId == order->agentId) { break; } // match would be killed here
+		fillable += resting->volume;
+		if (fillable >= order->volume) { return order->volume; }
+	}
+	return (unsigned int)fillable;
 }
 
 double MatchingEngine::settleLeg(const std::shared_ptr<Order>& incoming, const std::shared_ptr<Agent>& incomingAgent,
@@ -114,8 +155,15 @@ double MatchingEngine::settleLeg(const std::shared_ptr<Order>& incoming, const s
 void MatchingEngine::finishIncoming(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent, double totalCost) {
 	const bool isBid = (order->side == OrderAction::BID);
 
+	// IOC and FOK never rest. Anything left of one is cancelled, its escrow returned, exactly
+	// as for a limit order self trade protection killed.
+	const bool mayRest = (order->tif != TimeInForce::IOC && order->tif != TimeInForce::FOK);
+	if (order->type == OrderType::LIMIT && !mayRest && order->volume > 0) {
+		order->status = OrderStatus::CANCELED;
+	}
+
 	if (order->type == OrderType::LIMIT) {
-		// Self trade protection killed this order before it could rest. Return the escrow
+		// Self trade protection (or an IOC/FOK remainder) killed this order before it could rest. Return the escrow
 		// and keep it out of the book, it must not be counted or left behind.
 		if (order->status == OrderStatus::CANCELED) {
 			if (isBid) {

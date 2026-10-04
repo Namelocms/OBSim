@@ -24,6 +24,13 @@ public:
 	* done with the remainder once the walk stops. See finishIncoming.
 	*/
 	void match(std::shared_ptr<Order> order);
+	/* How much of this order would fill if it arrived now, without changing anything
+	*
+	* Walks the opposite side exactly as match would -- same price limit, same session
+	* eligibility, stopping where self trade protection would kill the order -- but only
+	* adds up volume. What fill-or-kill decides on. Capped at the order's own volume.
+	*/
+	unsigned int fillableVolume(const std::shared_ptr<Order>& order) const;
 
 private:
 	/* Settle one executed leg between the incoming order and a resting one
@@ -43,4 +50,6 @@ private:
 	/* Walk one side of the book for an incoming order, returning the total cost traded */
 	template <typename Queue>
 	double sweep(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent, Queue& opposite);
+	template <typename Queue>
+	unsigned int fillableFrom(const std::shared_ptr<Order>& order, const Queue& opposite) const;
 };

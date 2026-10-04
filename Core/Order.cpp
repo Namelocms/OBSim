@@ -11,7 +11,9 @@ Order::Order(
 	const OrderAction side,
 	const OrderType type,
 	std::vector<Holding> reservedShares,
-	double expiresAtMs
+	double expiresAtMs,
+	TimeInForce tif,
+	SessionMask sessions
 ) :
 	id(id),
 	agentId(agentId),
@@ -23,7 +25,9 @@ Order::Order(
 	side(side),
 	type(type),
 	reservedShares(reservedShares),
-	expiresAtMs(expiresAtMs) {}
+	expiresAtMs(expiresAtMs),
+	tif(tif),
+	sessions(sessions) {}
 
 std::vector<Holding> Order::getReturnableShares() {
 	std::vector<Holding> returnableShares = {};
@@ -57,6 +61,7 @@ std::string Order::toString() const {
 		"\n____STATUS: " + es.orderStatusString[this->status] +
 		"\n____SIDE: " + es.orderActionString[this->side] +
 		"\n____TYPE: " + es.orderTypeString[this->type] +
+		"\n____TIF: " + es.timeInForceString[this->tif] +
 		"\n____RESERVED_SHARES:\n" + reserved_string +
 		"\n=======================================\n";
 }

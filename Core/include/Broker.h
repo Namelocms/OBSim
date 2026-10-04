@@ -1,12 +1,19 @@
 #pragma once
 #include <memory>
+#include "Enums.h" // TimeInForce and SessionMask, needed complete for OrderRequest's defaults
 
 class OrderBook;
 class MatchingEngine;
 class Order;
 class Agent;
-enum class OrderAction;
-enum class OrderType;
+
+/* Longest a GTC order lives, in sim days
+*
+* Real brokers cap good-till-cancelled orders, typically somewhere from 60 to 180 days, so a
+* forgotten order cannot sit in the book forever. 90 is a starting point in that range and
+* sits in the order model plan's calibration register.
+*/
+inline constexpr int GTC_MAX_DAYS = 90;
 
 /* Who sent an order. Recorded on the request so a log or a check can tell an agent's own
 *  decision apart from one made on its behalf. */
@@ -33,8 +40,15 @@ struct OrderRequest {
 	/* Limit price, ignored for a market order */
 	double price = -1.0;
 	unsigned int volume = 0;
-	/* Sim time a limit order expires at, see Agent::rollOrderExpiry */
+	/* Sim time a GTD order expires at, see Agent::rollOrderExpiry. Worked out by the broker
+	*  for DAY and GTC, and meaningless for IOC and FOK, which never rest. */
 	double expiresAtMs = 0.0;
+	/* GTD by default, because that is what every agent order has always been: a limit order
+	*  rolled to a session boundary and cancelled there. A market order is always IOC. */
+	TimeInForce tif = TimeInForce::GTD;
+	/* Sessions the order may trade in. All of them by default, which is how the book behaved
+	*  before orders carried a mask at all. */
+	SessionMask sessions = SESSIONS_ALL;
 	OrderOrigin origin = OrderOrigin::AGENT;
 
 	/* An empty request is how a decision says "nothing to place" */
@@ -60,11 +74,17 @@ public:
 
 	/* Validate, escrow and route an order for this agent, returning it after matching
 	*
-	* Returns nullptr, having changed nothing, when the request is empty or the account
-	* cannot carry it. The returned order may be CLOSED (filled), OPEN (resting) or
-	* CANCELED (a market remainder, or killed by self trade protection).
+	* Returns nullptr, having changed nothing, when the request is empty, malformed (a FOK
+	* market order, a GTD already past, no sessions) or the account cannot carry it. The
+	* returned order may be CLOSED (filled), OPEN (resting) or CANCELED (an IOC or market
+	* remainder, a FOK that could not fill, or killed by self trade protection).
 	*/
 	std::shared_ptr<Order> submit(const OrderRequest& request, const std::shared_ptr<Agent>& agent);
 	/* Cancel a resting order on its owner's behalf, returning its escrow */
 	void cancel(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent);
+
+private:
+	/* Kill an order that never reached the book, returning the escrow submit reserved for it.
+	*  Uses the same refund arithmetic as OrderBook::cancelOrder so the two paths agree. */
+	void killUnplaced(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent);
 };
