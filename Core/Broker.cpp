@@ -9,6 +9,8 @@
 #include "include/Enums.h"
 #include "include/Util.h"
 #include "include/MarketCalendar.h"
+#include "include/FeeSchedule.h"
+#include <cmath>
 
 Broker::Broker(OrderBook& ob, MatchingEngine& me) : OB(ob), ME(me) {}
 
@@ -62,6 +64,7 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 	}
 
 	std::vector<Holding> reserved;
+	double feeReserve = 0.0;
 
 	if (request.side == OrderAction::BID) {
 		if (isLimit) {
@@ -70,8 +73,15 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 			// cent (and an endowment is not cent-rounded), so rounding can carry a floor-sized
 			// order up to half a cent past it. That must never get a valid order refused.
 			double escrow = roundTo(request.price * request.volume);
-			if (escrow > Account::buyingPower(*agent) + CASH_PRECISION) { return nullptr; }
+			// With fees on, the bid also escrows its worst-case fees, rounded up to the cent, so
+			// a cash account can never be driven below zero by what a fill costs
+			if (Account::feesEnabled(*agent)) {
+				double worst = Account::feeSchedule(*agent).worstCaseBuyFees(request.volume, request.price);
+				feeReserve = std::ceil(worst / CASH_PRECISION - 1e-9) * CASH_PRECISION;
+			}
+			if (escrow + feeReserve > Account::buyingPower(*agent) + CASH_PRECISION) { return nullptr; }
 			agent->updateCash(-escrow);
+			if (feeReserve > 0.0) { agent->updateCash(-feeReserve); }
 		}
 		// A market bid escrows nothing and pays leg by leg, bounded by buying power in the
 		// matching engine. See MatchingEngine::sweep for why that asymmetry is deliberate.
@@ -95,6 +105,7 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 		tif,
 		request.sessions
 	);
+	order->feeReserve = feeReserve;
 
 	// Fill or kill decides before anything trades, so a kill leaves the book untouched
 	if (tif == TimeInForce::FOK && this->ME.fillableVolume(order) < order->volume) {
@@ -110,6 +121,7 @@ void Broker::killUnplaced(const std::shared_ptr<Order>& order, const std::shared
 	order->status = OrderStatus::CANCELED;
 	if (order->side == OrderAction::BID) {
 		if (order->type == OrderType::LIMIT && order->volume > 0) { agent->updateCash(order->price * order->volume); }
+		Account::releaseFeeReserve(*agent, *order);
 	}
 	else {
 		for (Holding h : order->getReturnableShares()) { agent->upsertHolding(h); }
@@ -142,8 +154,13 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 	// ---- Can the account carry the new terms? Checked before anything moves. ----
 	const double oldEscrow = oldPrice * oldVolume;   // what cancelOrder would refund
 	const double newEscrow = roundTo(newPrice * newVolume);
+	double newReserve = 0.0;
+	if (isBid && Account::feesEnabled(*agent)) {
+		double worst = Account::feeSchedule(*agent).worstCaseBuyFees(newVolume, newPrice);
+		newReserve = std::ceil(worst / CASH_PRECISION - 1e-9) * CASH_PRECISION;
+	}
 	if (isBid) {
-		if (newEscrow > Account::buyingPower(*agent) + oldEscrow + CASH_PRECISION) {
+		if (newEscrow + newReserve > Account::buyingPower(*agent) + oldEscrow + order->feeReserve + CASH_PRECISION) {
 			++this->stats.replacesRefused;
 			return nullptr;
 		}
@@ -175,6 +192,11 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 	if (isBid) {
 		agent->updateCash(oldEscrow);
 		agent->updateCash(-newEscrow);
+		if (order->feeReserve > 0.0 || newReserve > 0.0) {
+			Account::releaseFeeReserve(*agent, *order);
+			if (newReserve > 0.0) { agent->updateCash(-newReserve); }
+			order->feeReserve = newReserve;
+		}
 	}
 	else if (newVolume < oldVolume) {
 		for (const Holding& h : order->trimReserved(newVolume)) { agent->upsertHolding(h); }

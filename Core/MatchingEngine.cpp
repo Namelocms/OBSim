@@ -6,6 +6,8 @@
 #include "include/Util.h"
 #include "include/SimClock.h"
 #include "include/Account.h"
+#include "include/FeeSchedule.h"
+#include "include/Ledger.h"
 
 MatchingEngine::MatchingEngine(OrderBook& ob) : OB(ob) {}
 
@@ -149,6 +151,14 @@ double MatchingEngine::settleLeg(const std::shared_ptr<Order>& incoming, const s
 	this->OB.fillOrder(resting, volume);
 	this->OB.recordTrade(price, volume, incoming->side);
 
+	// Fees, once per side of every leg: the incoming order took liquidity, the resting one made it
+	this->chargeFees(*incoming, *incomingAgent, false, price, volume);
+	this->chargeFees(*resting, *restingAgent, true, price, volume);
+	// A resting bid that just closed has no further use for what is left of its fee reserve
+	if (resting->status == OrderStatus::CLOSED && resting->side == OrderAction::BID) {
+		Account::releaseFeeReserve(*restingAgent, *resting);
+	}
+
 	// A fill is the only thing that changes a net position, so it is where an opening is seen
 	incomingAgent->notePositionChange();
 	restingAgent->notePositionChange();
@@ -172,6 +182,7 @@ void MatchingEngine::finishIncoming(const std::shared_ptr<Order>& order, const s
 		if (order->status == OrderStatus::CANCELED) {
 			if (isBid) {
 				if (order->volume > 0) { agent->updateCash(order->price * order->volume); }
+				Account::releaseFeeReserve(*agent, *order);
 			}
 			else {
 				std::vector<Holding> returnableShares = order->getReturnableShares();
@@ -186,6 +197,7 @@ void MatchingEngine::finishIncoming(const std::shared_ptr<Order>& order, const s
 		}
 		else {
 			order->status = OrderStatus::CLOSED;
+			if (isBid) { Account::releaseFeeReserve(*agent, *order); }
 		}
 		return;
 	}
@@ -208,4 +220,51 @@ void MatchingEngine::finishIncoming(const std::shared_ptr<Order>& order, const s
 	if (totalVolume > 0) {
 		order->price = totalCost / totalVolume;
 	}
+}
+
+void MatchingEngine::chargeFees(Order& order, Agent& agent, bool isMaker, double price, unsigned int volume) {
+	if (!Account::feesEnabled(agent)) { return; }
+	const FeeSchedule& fees = Account::feeSchedule(agent);
+	Ledger& ledger = this->OB.ledger;
+	const bool isSell = (order.side == OrderAction::ASK);
+
+	order.filledVolume += volume;
+	order.filledValue += price * volume;
+
+	// Commission is defined on the order as a whole, so charge only what this leg adds to it
+	double commissionTotal = fees.commission(order.filledVolume, order.filledValue);
+	double commission = commissionTotal - order.commissionAccrued;
+	order.commissionAccrued = commissionTotal;
+
+	// Maker-taker is per share, per leg. A rebate is a negative fee.
+	double exchange = isMaker ? -fees.makerRebate(price) * volume : fees.takerFee(price) * volume;
+
+	// Regulators charge the seller only
+	double regulatory = 0.0;
+	if (isSell) {
+		double tafTotal = fees.taf(order.filledVolume);
+		regulatory = fees.secFeeRate * price * volume + (tafTotal - order.tafAccrued);
+		order.tafAccrued = tafTotal;
+	}
+
+	double accrued = commission + exchange + regulatory;
+	order.feeAccrued += accrued;
+
+	// Cash moves in whole cents: charge the increase in the order's rounded total
+	double charge = roundTo(order.feeAccrued) - order.feeCharged;
+	order.feeCharged += charge;
+
+	ledger.commissions += commission;
+	ledger.exchangeFees += exchange;
+	ledger.regulatoryFees += regulatory;
+	ledger.feeRounding += charge - accrued;
+
+	// A bid pays from the reserve it escrowed for exactly this; anything beyond, and any
+	// rebate coming back, goes through cash
+	if (charge > 0.0 && order.feeReserve > 0.0) {
+		double fromReserve = std::min(charge, order.feeReserve);
+		order.feeReserve = roundTo(order.feeReserve - fromReserve);
+		charge = roundTo(charge - fromReserve);
+	}
+	if (charge != 0.0) { agent.updateCash(-charge); }
 }

@@ -36,11 +36,17 @@ struct Ledger {
 	double borrowFees = 0.0;
 	/* Negative equity written off after a liquidation gapped through, as a positive amount */
 	double brokerLosses = 0.0;
+	/* What agents actually paid in fees minus what the fees came to unrounded
+	*
+	*  Fees accrue at full precision per order, and cash moves in whole cents, so the two
+	*  differ by under a cent per order. Recording the difference keeps conservation exact
+	*  rather than "exact to a fraction of a cent per order". */
+	double feeRounding = 0.0;
 
 	/* Net money the house has taken out of agents' hands. A write-off is money the house
 	*  LOST, so it counts against: agents ended up holding that much more than they paid for. */
 	double houseTotal() const {
-		return this->commissions + this->exchangeFees + this->regulatoryFees
+		return this->commissions + this->exchangeFees + this->regulatoryFees + this->feeRounding
 			+ this->marginInterest + this->borrowFees - this->brokerLosses;
 	}
 

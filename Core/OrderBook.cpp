@@ -1,6 +1,7 @@
 #include "include/OrderBook.h"
 #include "include/Enums.h"
 #include "include/Agent.h"
+#include "include/Account.h"
 #include "include/Util.h"
 #include "include/SimClock.h"
 #include "include/MarketCalendar.h"
@@ -61,6 +62,7 @@ void OrderBook::cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent>
 	order->status = OrderStatus::CANCELED;
 	if (order->side == OrderAction::BID) {
 		agent->updateCash(order->price * order->volume);
+		Account::releaseFeeReserve(*agent, *order);
 		agent->removeActiveOrder(order);
 		this->bidQueue.erase(order);
 		this->numBids--;

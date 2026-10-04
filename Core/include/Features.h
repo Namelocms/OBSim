@@ -1,4 +1,5 @@
 #pragma once
+#include "FeeSchedule.h"
 
 /* ---- Feature switches ----
 *
@@ -20,4 +21,13 @@ struct Features {
 	*  flat) rather than +1 for everyone, and adversity is measured from where the position
 	*  opened rather than from the level of sentiment. Changes transient departures. */
 	bool adversityFromEntry = false;
+
+	/* OrderModelPlan Step 1.1: what trading costs. Off, every trade is free, as it always was.
+	*  On, each agent pays the schedule for its type. The defaults are the generic presets in
+	*  FeeSchedule.h; any schedule can be swapped in. */
+	struct Fees {
+		bool enabled = false;
+		FeeSchedule retail = FeeSchedule::zeroCommissionRetail();
+		FeeSchedule institution = FeeSchedule::institutionalPerShare();
+	} fees;
 };

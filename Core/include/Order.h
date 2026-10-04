@@ -31,6 +31,25 @@ public:
 	/* Sessions this order may trade in. Outside them it rests but is not matched. */
 	SessionMask sessions;
 
+	// ---- Fees (OrderModelPlan Step 1.1), all zero with fees off ----
+	//
+	// A commission minimum, a TAF cap and rounding are defined per ORDER, not per fill, so
+	// the order carries what it has filled and what it has been charged across its legs.
+
+	/* Shares this order has filled so far, and for how much in total */
+	unsigned int filledVolume = 0;
+	double filledValue = 0.0;
+	/* Commission and TAF accrued so far, unrounded, so each leg charges only the increase */
+	double commissionAccrued = 0.0;
+	double tafAccrued = 0.0;
+	/* All fees accrued so far, unrounded (rebates negative), and what has actually been charged
+	*  in whole cents. Each leg charges round(accrued) - charged. */
+	double feeAccrued = 0.0;
+	double feeCharged = 0.0;
+	/* Cash a limit bid escrowed for its worst-case fees on top of its price, drawn down as
+	*  fees are charged and refunded with whatever is left when the order closes or is cancelled */
+	double feeReserve = 0.0;
+
 	Order() = default;
 	Order(
 		const std::string id,

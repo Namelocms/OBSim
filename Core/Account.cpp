@@ -3,6 +3,8 @@
 #include "include/Order.h"
 #include "include/Holding.h"
 #include "include/Enums.h"
+#include "include/OrderBook.h"
+#include "include/FeeSchedule.h"
 #include <climits>
 #include <algorithm>
 
@@ -12,7 +14,7 @@ double escrowedCash(const Agent& agent) {
 	double escrow = 0.0;
 	for (const auto& kv : agent.activeBids) {
 		const std::shared_ptr<Order>& order = kv.second;
-		if (order != nullptr && order->status == OrderStatus::OPEN) { escrow += order->price * order->volume; }
+		if (order != nullptr && order->status == OrderStatus::OPEN) { escrow += order->price * order->volume + order->feeReserve; }
 	}
 	return escrow;
 }
@@ -44,9 +46,31 @@ double buyingPower(const Agent& agent) {
 	return std::max(agent.cash, 0.0);
 }
 
+const FeeSchedule& feeSchedule(const Agent& agent) {
+	const Features::Fees& fees = agent.OB.features.fees;
+	return (agent.type == AgentType::INSTITUTION) ? fees.institution : fees.retail;
+}
+
+bool feesEnabled(const Agent& agent) {
+	return agent.OB.features.fees.enabled;
+}
+
+void releaseFeeReserve(Agent& agent, Order& order) {
+	if (order.feeReserve > 0.0) { agent.updateCash(order.feeReserve); }
+	order.feeReserve = 0.0;
+}
+
 unsigned int affordableVolume(const Agent& agent, double price) {
 	if (!(price > 0.0)) { return 0; }
-	double shares = buyingPower(agent) / price;
+	double shares;
+	if (feesEnabled(agent)) {
+		const FeeSchedule& fees = feeSchedule(agent);
+		double spendable = buyingPower(agent) - fees.buyFeeFixed() - 0.02;
+		shares = (spendable > 0.0) ? spendable / (price + fees.buyFeePerShare(price)) : 0.0;
+	}
+	else {
+		shares = buyingPower(agent) / price;
+	}
 	if (shares >= double(INT_MAX)) { return (unsigned int)INT_MAX; }
 	return (unsigned int)shares;
 }

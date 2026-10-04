@@ -47,6 +47,14 @@ private:
 	* trade protection killed keeps none of its remainder, and its escrow is returned.
 	*/
 	void finishIncoming(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent, double totalCost);
+	/* Charge one side of a leg its fees (OrderModelPlan Step 1.1)
+	*
+	* Accrues commission, maker-taker and regulatory fees at full precision against the
+	* order, charges the agent the increase in their rounded total, takes it from the order's
+	* fee reserve first if it has one, and books every part to the ledger. Does nothing with
+	* fees off.
+	*/
+	void chargeFees(Order& order, Agent& agent, bool isMaker, double price, unsigned int volume);
 	/* Walk one side of the book for an incoming order, returning the total cost traded */
 	template <typename Queue>
 	double sweep(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent, Queue& opposite);
