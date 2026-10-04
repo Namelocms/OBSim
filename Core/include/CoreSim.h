@@ -11,6 +11,7 @@
 
 #include "OrderBook.h"
 #include "MatchingEngine.h"
+#include "Broker.h"
 #include "LogEntry.h"
 #include "MarketCalendar.h"
 
@@ -145,6 +146,8 @@ public:
     bool shouldGetSnapshot = false;
     OrderBook OB;
     MatchingEngine ME = MatchingEngine(this->OB);
+    /* Declared after OB and ME, which it holds references to */
+    Broker broker = Broker(this->OB, this->ME);
     std::function<void(LogEntry)> onLog;
     std::function<void()> onTick;
     /* Fired from the live loop whenever it is waiting rather than working

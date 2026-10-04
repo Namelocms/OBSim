@@ -394,8 +394,9 @@ void CoreSim::initAgents(unsigned int _agentStartCount) {
 			a_type,
 			a_subType,
 			this->OB,
-			this->ME
+			this->broker
 		);
+		this->OB.ledger.minted += agent->cash;
 
 		// Passive quoting agents claim an early slot with their fast floor, then back
 		// off to a re-quote cadence. A fill wakes them again, so a stale quote is
@@ -948,7 +949,7 @@ void CoreSim::beginTransientDeparture(std::shared_ptr<Agent> agent, double simTi
 	const auto& entryOrders = (entry == OrderAction::BID) ? agent->activeBids : agent->activeAsks;
 	toCancel.reserve(entryOrders.size());
 	for (const auto& kv : entryOrders) { toCancel.push_back(kv.second); }
-	for (const std::shared_ptr<Order>& order : toCancel) { this->OB.cancelOrder(order, agent); }
+	for (const std::shared_ptr<Order>& order : toCancel) { this->broker.cancel(order, agent); }
 
 	// An agent that arrived, never filled, and left is already clean
 	if (agent->holdings.empty() && agent->activeBids.empty() && agent->activeAsks.empty()) {
@@ -1035,7 +1036,11 @@ bool CoreSim::rollTransientPersonality(std::shared_ptr<Agent> agent, double simT
 	// reopened here -- but their cash is money, and money has to be denominated in the same
 	// market the residents live in or a transient is either a whale or an irrelevance
 	// depending only on how big the float happens to be.
+	// Whatever the previous occupant left behind leaves with it, and the new endowment is
+	// new money. Both are recorded so cash conservation holds with transients on.
+	this->OB.ledger.retired += agent->cash;
 	agent->cash = this->cashScale * randomDouble(TRANSIENT_CASH_MIN, TRANSIENT_CASH_MAX);
+	this->OB.ledger.minted += agent->cash;
 
 	// Arrives holding conviction, not neutral: it turned up wanting to trade. OU then
 	// pulls this back toward the market's neutral level over its tenure, which is what
@@ -1095,7 +1100,7 @@ std::shared_ptr<Agent> CoreSim::acquireTransientSlot(double simTimeMs) {
 		AgentType::RETAIL,
 		AgentSubType::NOISE,
 		this->OB,
-		this->ME
+		this->broker
 	);
 
 	if (!this->rollTransientPersonality(agent, simTimeMs)) { return nullptr; }

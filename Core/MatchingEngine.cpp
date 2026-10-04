@@ -5,6 +5,7 @@
 #include "include/Enums.h"
 #include "include/Util.h"
 #include "include/SimClock.h"
+#include "include/Account.h"
 
 MatchingEngine::MatchingEngine(OrderBook& ob) : OB(ob) {}
 
@@ -56,7 +57,7 @@ double MatchingEngine::sweep(const std::shared_ptr<Order>& order, const std::sha
 		// with limit bids, which pre-debit their whole cost -- a market bid reserving
 		// against currentPrice truncates a sweep that walks the book (see REFERENCE.md).
 		if (isBid && !isLimit) {
-			tradeVol = std::min(tradeVol, this->getAffordableVolume(resting->price, agent->cash));
+			tradeVol = std::min(tradeVol, Account::affordableVolume(*agent, resting->price));
 		}
 		if (tradeVol < 1) { break; }
 
@@ -155,10 +156,4 @@ void MatchingEngine::finishIncoming(const std::shared_ptr<Order>& order, const s
 	if (totalVolume > 0) {
 		order->price = totalCost / totalVolume;
 	}
-}
-
-// ---- Utility Operations ----
-
-unsigned int MatchingEngine::getAffordableVolume(double targetPrice, double actingAgentCash) {
-	return unsigned int(actingAgentCash / targetPrice);
 }

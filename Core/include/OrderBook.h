@@ -10,6 +10,7 @@
 #include "Enums.h" // OrderAction, for TradePrint::aggressor
 #include "Order.h" // for order queues
 #include "Snapshot.h"
+#include "Ledger.h"
 
 class Agent;
 class SimClock;
@@ -114,6 +115,8 @@ public:
 	* replacing a filled quote. Drained by CoreSim after each event.
 	*/
 	std::vector<std::string> wakeQueue;
+	/* Every dollar that enters, leaves, or moves outside a trade. See Ledger.h. */
+	Ledger ledger;
 
 	OrderBook() = default;
 	OrderBook(double currentPrice, unsigned int shareFloat = 0);

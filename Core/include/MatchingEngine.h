@@ -43,6 +43,4 @@ private:
 	/* Walk one side of the book for an incoming order, returning the total cost traded */
 	template <typename Queue>
 	double sweep(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent, Queue& opposite);
-	/* Get the max amount of shares an agent can afford at the given targetPrice */
-	unsigned int getAffordableVolume(double targetPrice, double actingAgentCash);
 };

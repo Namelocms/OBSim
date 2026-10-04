@@ -195,6 +195,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->tickHistory.clear();
 	this->tickCount = 0;
 	this->wakeQueue.clear();
+	this->ledger.reset();
 	//this->orderHistory.clear();
 	this->bidQueue.clear();
 	this->askQueue.clear();

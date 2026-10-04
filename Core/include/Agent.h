@@ -3,6 +3,7 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include "Broker.h" // OrderRequest, returned by value from the make* decisions
 
 enum class OrderAction;
 enum class AgentStatus;
@@ -10,7 +11,7 @@ enum class AgentType;
 enum class AgentSubType;
 enum class Session;
 class OrderBook;
-class MatchingEngine;
+class Broker;
 class Order;
 class Holding;
 
@@ -495,8 +496,10 @@ public:
 	std::unordered_map<std::string, std::shared_ptr<Order>> activeBids;
 	/* The orderbook for the current stock */
 	OrderBook& OB;
-	/* The matching engine */
-	MatchingEngine& ME;
+	/* The broker every order and cancel goes through. Agents never reach the matching
+	*  engine directly: the broker owns the account side of an order (escrow, and from
+	*  OrderModelPlan Phase 1 on, margin, locates and fees). */
+	Broker& broker;
 
 	Agent() = default;
 	Agent(
@@ -507,7 +510,7 @@ public:
 		AgentType type,
 		AgentSubType subType,
 		OrderBook& ob,
-		MatchingEngine& me
+		Broker& broker
 	);
 
 // ---- Cash Operations ----
@@ -573,9 +576,16 @@ public:
 	OrderAction getRandomAction();
 	/* !!DEPRECATED!! Choose a random OrderAction given the agent's current holdings and cash */
 	OrderAction getRandomAction_DEPRECATED();
-	/* Make a random market bid order */
-	std::shared_ptr<Order> makeMarketBid();
-	/* Make a random limit bid order
+	/* ---- Order decisions ----
+	*
+	* Each of these decides an order -- side, type, price, size, lifetime -- and returns it
+	* as a request for the broker to place. They draw all of an order's randomness, in the
+	* same sequence they always have, and leave escrow and id assignment to the broker. An
+	* empty request means the agent cannot afford or source the order.
+	*/
+	/* Decide a random market bid */
+	OrderRequest makeMarketBid();
+	/* Decide a random limit bid
 	*
 	* forceAggressive skips the per-subtype crossing roll and always prices through the
 	* opposite touch. Used when unwinding, where the point is to get filled, not to quote.
@@ -583,11 +593,11 @@ public:
 	* to converge: a random slice leaves a remainder every time, so the position decays
 	* geometrically instead of closing.
 	*/
-	std::shared_ptr<Order> makeLimitBid(bool forceAggressive = false, bool fullSize = false);
-	/* Make a random market ask order */
-	std::shared_ptr<Order> makeMarketAsk();
-	/* Make a random limit ask order, see makeLimitBid for forceAggressive */
-	std::shared_ptr<Order> makeLimitAsk(bool forceAggressive = false, bool fullSize = false);
+	OrderRequest makeLimitBid(bool forceAggressive = false, bool fullSize = false);
+	/* Decide a random market ask */
+	OrderRequest makeMarketAsk();
+	/* Decide a random limit ask, see makeLimitBid for forceAggressive */
+	OrderRequest makeLimitAsk(bool forceAggressive = false, bool fullSize = false);
 	/* Cancel a random order */
 	void cancelOrder();
 	/* Do nothing */

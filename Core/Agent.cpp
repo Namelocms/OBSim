@@ -4,16 +4,17 @@
 #include "include/Order.h"
 #include "include/Holding.h"
 #include "include/OrderBook.h"
-#include "include/MatchingEngine.h"
+#include "include/Broker.h"
+#include "include/Account.h"
 #include "include/SimClock.h"
 #include "include/MarketCalendar.h"
 
-Agent::Agent(std::string id, double reactionTimeFloor, double cash, AgentStatus status, AgentType type, AgentSubType subType, OrderBook& ob, MatchingEngine& me) :
+Agent::Agent(std::string id, double reactionTimeFloor, double cash, AgentStatus status, AgentType type, AgentSubType subType, OrderBook& ob, Broker& broker) :
 	id(id), 
 	reactionTimeFloor(reactionTimeFloor), 
 	reactionTime(reactionTimeFloor), cash(cash), 
 	status(status), type(type), subType(subType), 
-	OB(ob), ME(me), 
+	OB(ob), broker(broker), 
 	sentiment(randomDouble(-0.9, 0.9)), sentimentTemperature(0.5),
 	participationThreshold(randomDouble(0.0, 1.0)) {
 
@@ -121,7 +122,7 @@ void Agent::actRandom() {
 
 	OrderAction action = this->getRandomAction();
 	OrderType orderType = randomInt(0, 1) ? OrderType::MARKET : OrderType::LIMIT;
-	std::shared_ptr<Order> order;
+	OrderRequest request{ action, orderType };
 
 	switch (action) {
 	case OrderAction::BID:
@@ -131,16 +132,16 @@ void Agent::actRandom() {
 			// Institutions and algos quote passively, real desks use marketable limits
 			// to cap slippage rather than sending naked market orders
 			if (this->type == AgentType::INSTITUTION || this->subType == AgentSubType::ALGO) { break; }
-			order = this->makeMarketBid();
+			request = this->makeMarketBid();
 			// An agent that cannot afford or source the order simply does nothing
-			if (order == nullptr) { break; }
-			this->ME.match(order);
+			if (request.empty()) { break; }
+			this->broker.submit(request, shared_from_this());
 			break;
 		case OrderType::LIMIT:
 			if (this->subType == AgentSubType::ALGO && this->activeBids.size() > 0) { break; }
-			order = this->makeLimitBid();
-			if (order == nullptr) { break; }
-			this->ME.match(order);
+			request = this->makeLimitBid();
+			if (request.empty()) { break; }
+			this->broker.submit(request, shared_from_this());
 			break;
 		}
 		break;
@@ -149,15 +150,15 @@ void Agent::actRandom() {
 		case OrderType::MARKET:
 			if (this->OB.session != Session::REGULAR) { break; }
 			if (this->type == AgentType::INSTITUTION || this->subType == AgentSubType::ALGO) { break; }
-			order = this->makeMarketAsk();
-			if (order == nullptr) { break; }
-			this->ME.match(order);
+			request = this->makeMarketAsk();
+			if (request.empty()) { break; }
+			this->broker.submit(request, shared_from_this());
 			break;
 		case OrderType::LIMIT:
 			if (this->subType == AgentSubType::ALGO && this->activeAsks.size() > 0) { break; }
-			order = this->makeLimitAsk();
-			if (order == nullptr) { break; }
-			this->ME.match(order);
+			request = this->makeLimitAsk();
+			if (request.empty()) { break; }
+			this->broker.submit(request, shared_from_this());
 			break;
 		}
 		break;
@@ -184,23 +185,21 @@ void Agent::actFlatten() {
 	std::vector<std::shared_ptr<Order>> stale;
 	stale.reserve(resting.size());
 	for (const auto& kv : resting) { stale.push_back(kv.second); }
-	for (const std::shared_ptr<Order>& o : stale) { this->OB.cancelOrder(o, shared_from_this()); }
+	for (const std::shared_ptr<Order>& o : stale) { this->broker.cancel(o, shared_from_this()); }
 
-	std::shared_ptr<Order> order;
+	OrderRequest request;
 
 	// Always crosses, always for the whole remaining position. Marketable limits work in
 	// every session, so unwinding does not stall outside REGULAR the way a market order would.
 	if (side == OrderAction::ASK) {
 		if (this->getTotalHoldings() < 1) { return; }
-		order = this->makeLimitAsk(true, true);
-		if (order == nullptr) { return; }
-		this->ME.match(order);
+		request = this->makeLimitAsk(true, true);
 	}
 	else {
-		order = this->makeLimitBid(true, true);
-		if (order == nullptr) { return; }
-		this->ME.match(order);
+		request = this->makeLimitBid(true, true);
 	}
+	if (request.empty()) { return; }
+	this->broker.submit(request, shared_from_this());
 }
 OrderAction Agent::entrySide() const {
 	return (this->directionalBias >= 0.0) ? OrderAction::BID : OrderAction::ASK;
@@ -309,7 +308,7 @@ OrderAction Agent::sentimentToAction() {
 	return this->sentimentActions[choice];
 }
 OrderAction Agent::getRandomAction() {
-	bool hasCash = this->cash >= this->OB.currentPrice;
+	bool hasCash = Account::buyingPower(*this) >= this->OB.currentPrice;
 	bool hasHolding = this->getTotalHoldings() > 0;
 	bool hasActiveOrder = !this->activeAsks.empty() || !this->activeBids.empty();
 	OrderAction action = OrderAction::HOLD;
@@ -341,7 +340,7 @@ OrderAction Agent::getRandomAction_DEPRECATED() {
 	int actionChoice = 0;
 	int numActions = 1;
 
-	if (this->cash >= this->OB.currentPrice) { availableActions.push_back(OrderAction::BID); }
+	if (Account::buyingPower(*this) >= this->OB.currentPrice) { availableActions.push_back(OrderAction::BID); }
 	if (totalHoldings > 0) { availableActions.push_back(OrderAction::ASK); }
 	if (!this->activeAsks.empty() || !this->activeBids.empty()) { availableActions.push_back(OrderAction::CANCEL); }
 
@@ -351,81 +350,55 @@ OrderAction Agent::getRandomAction_DEPRECATED() {
 
 	return availableActions[actionChoice];
 }
-std::shared_ptr<Order> Agent::makeMarketBid() {
-	int maxPurchasable = int(this->cash / this->OB.currentPrice);
-	if (maxPurchasable < 1) { return nullptr; }
+OrderRequest Agent::makeMarketBid() {
+	int maxPurchasable = int(Account::affordableVolume(*this, this->OB.currentPrice));
+	if (maxPurchasable < 1) { return OrderRequest{ OrderAction::BID, OrderType::MARKET }; }
 
 	int chosenVol = randomInt(1, maxPurchasable);
 
-	std::shared_ptr<Order> order = std::make_shared<Order>(
-		this->OB.makeId(ID_TYPE::ORDER),
-		this->id,
-		-1,
-		chosenVol,
-		this->OB.clock->simTimeMs,
-		OrderAction::BID,
-		OrderType::MARKET
-	);
-
-	return order;
+	OrderRequest request{ OrderAction::BID, OrderType::MARKET };
+	request.volume = (unsigned int)chosenVol;
+	return request;
 }
-std::shared_ptr<Order> Agent::makeLimitBid(bool forceAggressive, bool fullSize) {
+OrderRequest Agent::makeLimitBid(bool forceAggressive, bool fullSize) {
+	OrderRequest request{ OrderAction::BID, OrderType::LIMIT };
+
 	// Crossing orders are priced off the opposite touch, passive ones off the last trade
 	double chosenPrice = (forceAggressive || this->rollAggressive())
 		? this->getMarketablePrice(OrderAction::BID) : -1.0;
 	if (chosenPrice <= 0.0) { chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::BID); }
 
-	int maxPurchasable = int(this->cash / chosenPrice);
+	int maxPurchasable = int(Account::affordableVolume(*this, chosenPrice));
 
 	// Crossing costs more than resting. An agent that cannot afford to take
 	// liquidity posts passively instead of sitting the turn out.
 	if (maxPurchasable < 1) {
 		chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::BID);
-		maxPurchasable = int(this->cash / chosenPrice);
+		maxPurchasable = int(Account::affordableVolume(*this, chosenPrice));
 	}
-	if (maxPurchasable < 1) { return nullptr; }
+	if (maxPurchasable < 1) { return request; }
 
 	int chosenVol = fullSize ? maxPurchasable : randomInt(1, maxPurchasable);
-	double totalValue = roundTo(chosenPrice * chosenVol);
 
-	std::shared_ptr<Order> order = std::make_shared<Order>(
-		this->OB.makeId(ID_TYPE::ORDER),
-		this->id,
-		chosenPrice,
-		chosenVol,
-		this->OB.clock->simTimeMs,
-		OrderAction::BID,
-		OrderType::LIMIT,
-		std::vector<Holding>{},
-		this->rollOrderExpiry(this->OB.clock->simTimeMs)
-	);
-
-	this->updateCash(-totalValue);
-
-	return order;
+	request.price = chosenPrice;
+	request.volume = (unsigned int)chosenVol;
+	request.expiresAtMs = this->rollOrderExpiry(this->OB.clock->simTimeMs);
+	return request;
 }
-std::shared_ptr<Order> Agent::makeMarketAsk() {
+OrderRequest Agent::makeMarketAsk() {
+	OrderRequest request{ OrderAction::ASK, OrderType::MARKET };
+
 	int chosenVol = 1;
 	int totalHoldings = this->getTotalHoldings();
-	if (totalHoldings < 1) { return nullptr; }
+	if (totalHoldings < 1) { return request; }
 	if (totalHoldings > 1) { chosenVol = randomInt(1, totalHoldings); }
 
-	std::vector<Holding> reservedHoldings = this->removeHoldings(chosenVol);
-
-	std::shared_ptr<Order> order = std::make_shared<Order>(
-		this->OB.makeId(ID_TYPE::ORDER),
-		this->id,
-		-1,
-		chosenVol,
-		this->OB.clock->simTimeMs,
-		OrderAction::ASK,
-		OrderType::MARKET,
-		reservedHoldings
-	);
-
-	return order;
+	request.volume = (unsigned int)chosenVol;
+	return request;
 }
-std::shared_ptr<Order> Agent::makeLimitAsk(bool forceAggressive, bool fullSize) {
+OrderRequest Agent::makeLimitAsk(bool forceAggressive, bool fullSize) {
+	OrderRequest request{ OrderAction::ASK, OrderType::LIMIT };
+
 	// Crossing orders are priced off the opposite touch, passive ones off the last trade
 	double chosenPrice = (forceAggressive || this->rollAggressive())
 		? this->getMarketablePrice(OrderAction::ASK) : -1.0;
@@ -434,25 +407,14 @@ std::shared_ptr<Order> Agent::makeLimitAsk(bool forceAggressive, bool fullSize) 
 	int chosenVol = 1;
 
 	int totalHoldings = this->getTotalHoldings();
-	if (totalHoldings < 1) { return nullptr; }
+	if (totalHoldings < 1) { return request; }
 	if (fullSize) { chosenVol = totalHoldings; }
 	else if (totalHoldings > 1) { chosenVol = randomInt(1, totalHoldings); }
 
-	std::vector<Holding> reservedHoldings = this->removeHoldings(chosenVol);
-
-	std::shared_ptr<Order> order = std::make_shared<Order>(
-		this->OB.makeId(ID_TYPE::ORDER),
-		this->id,
-		chosenPrice,
-		chosenVol,
-		this->OB.clock->simTimeMs,
-		OrderAction::ASK,
-		OrderType::LIMIT,
-		reservedHoldings,
-		this->rollOrderExpiry(this->OB.clock->simTimeMs)
-	);
-
-	return order;
+	request.price = chosenPrice;
+	request.volume = (unsigned int)chosenVol;
+	request.expiresAtMs = this->rollOrderExpiry(this->OB.clock->simTimeMs);
+	return request;
 }
 void Agent::cancelOrder() {
 	bool hasBids = !activeBids.empty();
@@ -465,12 +427,12 @@ void Agent::cancelOrder() {
 	if (side) {
 		auto it = activeAsks.begin();
 		std::advance(it, randomInt(0, static_cast<int>(activeAsks.size() - 1)));
-		this->OB.cancelOrder(it->second, shared_from_this());
+		this->broker.cancel(it->second, shared_from_this());
 	}
 	else {
 		auto it = activeBids.begin();
 		std::advance(it, randomInt(0, static_cast<int>(activeBids.size() - 1)));
-		this->OB.cancelOrder(it->second, shared_from_this());
+		this->broker.cancel(it->second, shared_from_this());
 	}
 }
 void Agent::hold() {
