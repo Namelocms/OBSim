@@ -8,284 +8,152 @@
 
 MatchingEngine::MatchingEngine(OrderBook& ob) : OB(ob) {}
 
-// ---- BID Operations ----
-
-void MatchingEngine::matchMarketBid(std::shared_ptr<Order> order) {
+void MatchingEngine::match(std::shared_ptr<Order> order) {
 	if (order == nullptr) { return; }
 
-	std::shared_ptr<Agent> biddingAgent = this->OB.getAgent(order->agentId);
-	std::shared_ptr<Agent> askingAgent;
-	std::shared_ptr<Order> bestAsk;
-	unsigned int tradeVol = 0;
-	unsigned int affordableVol = 0;
-	unsigned int totalVolume = 0;
-	double tradeCost = 0.00;
+	std::shared_ptr<Agent> agent = this->OB.getAgent(order->agentId);
+
+	double totalCost = (order->side == OrderAction::BID)
+		? this->sweep(order, agent, this->OB.askQueue)
+		: this->sweep(order, agent, this->OB.bidQueue);
+
+	this->finishIncoming(order, agent, totalCost);
+}
+
+template <typename Queue>
+double MatchingEngine::sweep(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent, Queue& opposite) {
+	const bool isBid = (order->side == OrderAction::BID);
+	const bool isLimit = (order->type == OrderType::LIMIT);
 	double totalCost = 0.00;
 
-	auto it = this->OB.askQueue.begin();
-	while (it != this->OB.askQueue.end() && order->volume > 0) {
-		bestAsk = *it;
-		askingAgent = this->OB.getAgent(bestAsk->agentId);
+	auto it = opposite.begin();
+	while (it != opposite.end() && order->volume > 0) {
+		std::shared_ptr<Order> resting = *it;
+
+		// A limit order stops at its own price. Checked before anything else, so a walk
+		// never reaches past it even to clean up.
+		if (isLimit) {
+			bool crosses = isBid ? (resting->price <= order->price) : (resting->price >= order->price);
+			if (!crosses) { break; }
+		}
 
 		// Clean stagnant canceled orders
-		if (bestAsk->status == OrderStatus::CANCELED) {
-			it = this->OB.askQueue.erase(it);
+		if (resting->status == OrderStatus::CANCELED) {
+			it = opposite.erase(it);
 			continue;
 		}
 
-		// Cancel new order when bidder id is the same as asker id
-		if (askingAgent->id == biddingAgent->id) {
+		// Self trade protection cancels the INCOMING order, never the resting one
+		if (resting->agentId == order->agentId) {
 			order->status = OrderStatus::CANCELED;
 			break;
 		}
 
-		// Find volume of shares to trade
-		affordableVol = this->getAffordableVolume(bestAsk->price, biddingAgent->cash);
-		tradeVol = std::min({ order->volume, bestAsk->volume, affordableVol });
+		unsigned int tradeVol = std::min(order->volume, resting->volume);
+
+		// A market bid is the one order with no escrow behind it: it pays as it goes, so
+		// each leg is bounded by what the buyer can still afford. Deliberately asymmetric
+		// with limit bids, which pre-debit their whole cost -- a market bid reserving
+		// against currentPrice truncates a sweep that walks the book (see REFERENCE.md).
+		if (isBid && !isLimit) {
+			tradeVol = std::min(tradeVol, this->getAffordableVolume(resting->price, agent->cash));
+		}
 		if (tradeVol < 1) { break; }
 
-		// Calculate cost of trade
-		tradeCost = roundTo(tradeVol * bestAsk->price);
-		totalCost += tradeCost;
+		totalCost += this->settleLeg(order, agent, resting, this->OB.getAgent(resting->agentId), tradeVol);
 
-		// Update the asking agent's cash
-		askingAgent->updateCash(tradeCost);
-
-		// Update the bidding agent's cash and holdings
-		biddingAgent->updateCash(-tradeCost);
-		biddingAgent->upsertHolding(Holding(bestAsk->price, tradeVol));
-
-		this->OB.updateCurrentPrice(bestAsk->price);
-
-		order->volume -= tradeVol;
-
-		this->OB.fillOrder(bestAsk, tradeVol);
-		this->OB.recordTrade(bestAsk->price, tradeVol, OrderAction::BID);
-		if (bestAsk->volume == 0) {
-			it = this->OB.askQueue.erase(it);
+		if (resting->volume == 0) {
+			it = opposite.erase(it);
 		}
+		// The resting order is still there, so the incoming one is exhausted (or, for a
+		// market bid, out of cash). Either way the walk is over.
 		else { break; }
 	}
 
-	order->status = (order->volume > 0) ? OrderStatus::CANCELED : OrderStatus::CLOSED;
-
-	// Volume Weighted Average Price (VWAP) of shares bought for order
-	totalVolume = order->entryVolume - order->volume;
-	if (totalVolume > 0) {
-		order->price = totalCost / totalVolume;
-	}
+	return totalCost;
 }
-void MatchingEngine::matchLimitBid(std::shared_ptr<Order> order) {
-	if (order == nullptr) { return; }
 
-	std::shared_ptr<Agent> biddingAgent = this->OB.getAgent(order->agentId);
-	std::shared_ptr<Agent> askingAgent;
-	std::shared_ptr<Order> bestAsk;
-	unsigned int tradeVol = 0;
-	unsigned int totalVolume = 0;
-	double tradeCost = 0.00;
-	double refund = 0.00;
+double MatchingEngine::settleLeg(const std::shared_ptr<Order>& incoming, const std::shared_ptr<Agent>& incomingAgent,
+	const std::shared_ptr<Order>& resting, const std::shared_ptr<Agent>& restingAgent, unsigned int volume) {
 
-	auto it = this->OB.askQueue.begin();
-	while (it != this->OB.askQueue.end() && order->volume > 0) {
-		bestAsk = *it;
-		askingAgent = this->OB.getAgent(bestAsk->agentId);
+	// Every trade happens at the resting order's price
+	double price = resting->price;
+	double cost = roundTo(volume * price);
 
-		// Prevent trading with higher priced ask limit orders
-		if (bestAsk->price > order->price) { break; }
-
-		// Clean stagnant canceled orders
-		if (bestAsk->status == OrderStatus::CANCELED) {
-			it = this->OB.askQueue.erase(it);
-			continue;
+	if (incoming->side == OrderAction::BID) {
+		if (incoming->type == OrderType::LIMIT) {
+			// The bid's whole cost was escrowed at its own price. Refund the buyer for
+			// any price improvement, the rest of the escrow pays the seller.
+			double refund = roundTo(volume * (incoming->price - price));
+			if (refund > 0) { incomingAgent->updateCash(refund); }
 		}
-
-		// Cancel new order when bidder id is the same as asker id
-		if (askingAgent->id == biddingAgent->id) {
-			order->status = OrderStatus::CANCELED;
-			break;
+		else {
+			// No escrow, a market bid pays as it goes
+			incomingAgent->updateCash(-cost);
 		}
-
-		tradeVol = std::min({ order->volume, bestAsk->volume });
-		if (tradeVol < 1) { break; }
-
-		tradeCost = roundTo(tradeVol * bestAsk->price);
-
-		// Refund the buyer for price improvement
-		refund = roundTo(tradeVol * (order->price - bestAsk->price));
-		if (refund > 0) {
-			biddingAgent->updateCash(refund);
-		}
-
-		askingAgent->updateCash(tradeCost);
-
-		biddingAgent->upsertHolding(Holding(bestAsk->price, tradeVol));
-
-		this->OB.fillOrder(bestAsk, tradeVol);
-		this->OB.updateCurrentPrice(bestAsk->price);
-
-		order->volume -= tradeVol;
-
-		this->OB.recordTrade(bestAsk->price, tradeVol, OrderAction::BID);
-		if (bestAsk->volume == 0) {
-			it = this->OB.askQueue.erase(it);
-		}
-		else { break; }
+		restingAgent->updateCash(cost);
+		incomingAgent->upsertHolding(Holding(price, volume));
+	}
+	else {
+		// The resting bid's cash was escrowed when it was placed; the incoming ask's
+		// shares were reserved when it was made. Only the seller's cash and the buyer's
+		// shares are left to move.
+		incomingAgent->updateCash(cost);
+		restingAgent->upsertHolding(Holding(price, volume));
 	}
 
-	// Self trade protection killed this order before it could rest. Refund the
-	// escrow and keep it out of the book, it must not be counted or left behind.
-	if (order->status == OrderStatus::CANCELED) {
-		if (order->volume > 0) { biddingAgent->updateCash(order->price * order->volume); }
+	this->OB.updateCurrentPrice(price);
+	incoming->volume -= volume;
+	this->OB.fillOrder(resting, volume);
+	this->OB.recordTrade(price, volume, incoming->side);
+
+	return cost;
+}
+
+void MatchingEngine::finishIncoming(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent, double totalCost) {
+	const bool isBid = (order->side == OrderAction::BID);
+
+	if (order->type == OrderType::LIMIT) {
+		// Self trade protection killed this order before it could rest. Return the escrow
+		// and keep it out of the book, it must not be counted or left behind.
+		if (order->status == OrderStatus::CANCELED) {
+			if (isBid) {
+				if (order->volume > 0) { agent->updateCash(order->price * order->volume); }
+			}
+			else {
+				std::vector<Holding> returnableShares = order->getReturnableShares();
+				for (Holding h : returnableShares) { agent->upsertHolding(h); }
+			}
+			return;
+		}
+
+		if (order->volume > 0) {
+			agent->upsertActiveOrder(order);
+			this->OB.addOrder(order);
+		}
+		else {
+			order->status = OrderStatus::CLOSED;
+		}
 		return;
 	}
 
-	if (order->volume > 0) {
-		biddingAgent->upsertActiveOrder(order);
-		this->OB.addOrder(order);
-	}
-	else {
-		order->status = OrderStatus::CLOSED;
-	}
-}
-
-// ---- ASK Operations ----
-
-void MatchingEngine::matchMarketAsk(std::shared_ptr<Order> order) {
-	if (order == nullptr) { return; }
-
-	std::shared_ptr<Agent> askingAgent = this->OB.getAgent(order->agentId);
-	std::shared_ptr<Agent> biddingAgent;
-	std::shared_ptr<Order> bestBid;
-	unsigned int tradeVol = 0;
-	unsigned int totalVolume = 0;
-	double tradeCost = 0.00;
-	double totalCost = 0.00;
-
-	auto it = this->OB.bidQueue.begin();
-	while (it != this->OB.bidQueue.end() && order->volume > 0) {
-		bestBid = *it;
-		biddingAgent = this->OB.getAgent(bestBid->agentId);
-
-		// Clean stagnant canceled orders
-		if (bestBid->status == OrderStatus::CANCELED) {
-			it = this->OB.bidQueue.erase(it);
-			continue;
-		}
-
-		// Cancel new order when asker id is the same as bidder id
-		if (biddingAgent->id == askingAgent->id) {
-			order->status = OrderStatus::CANCELED;
-			break;
-		}
-
-		tradeVol = std::min({ order->volume, bestBid->volume });
-		if (tradeVol < 1) { break; }
-
-		// Calculate cost of trade
-		tradeCost = roundTo(tradeVol * bestBid->price);
-		totalCost += tradeCost;
-
-		// Update the asking agent's cash
-		askingAgent->updateCash(tradeCost);
-
-		// Update the bidding agent's holdings
-		biddingAgent->upsertHolding(Holding(bestBid->price, tradeVol));
-
-		this->OB.updateCurrentPrice(bestBid->price);
-
-		order->volume -= tradeVol;
-
-		this->OB.fillOrder(bestBid, tradeVol);
-		this->OB.recordTrade(bestBid->price, tradeVol, OrderAction::ASK);
-		if (bestBid->volume == 0) {
-			it = this->OB.bidQueue.erase(it);
-		}
-		else { break; }
-	}
-
+	// Market orders never rest. Whatever is left is cancelled, and an ask's unsold
+	// reserved shares go back to the seller.
 	if (order->volume > 0) {
 		order->status = OrderStatus::CANCELED;
-		auto returnableShares = order->getReturnableShares();
-		for (Holding h : returnableShares) {
-			askingAgent->upsertHolding(h);
+		if (!isBid) {
+			std::vector<Holding> returnableShares = order->getReturnableShares();
+			for (Holding h : returnableShares) { agent->upsertHolding(h); }
 		}
 	}
 	else {
 		order->status = OrderStatus::CLOSED;
 	}
 
-	// Volume Weighted Average Price (VWAP) of shares bought for order
-	totalVolume = order->entryVolume - order->volume;
+	// Volume Weighted Average Price (VWAP) of the shares traded for the order
+	unsigned int totalVolume = order->entryVolume - order->volume;
 	if (totalVolume > 0) {
 		order->price = totalCost / totalVolume;
-	}
-}
-void MatchingEngine::matchLimitAsk(std::shared_ptr<Order> order) {
-	if (order == nullptr) { return; }
-
-	std::shared_ptr<Agent> askingAgent = this->OB.getAgent(order->agentId);
-	std::shared_ptr<Agent> biddingAgent;
-	std::shared_ptr<Order> bestBid;
-	unsigned int tradeVol = 0;
-	unsigned int totalVolume = 0;
-	double tradeCost = 0.00;
-
-	auto it = this->OB.bidQueue.begin();
-	while (it != this->OB.bidQueue.end() && order->volume > 0) {
-		bestBid = *it;
-		biddingAgent = this->OB.getAgent(bestBid->agentId);
-
-		// Prevent trading with higher priced ask limit orders
-		if (bestBid->price < order->price) { break; }
-
-		// Clean stagnant canceled orders
-		if (bestBid->status == OrderStatus::CANCELED) {
-			it = this->OB.bidQueue.erase(it);
-			continue;
-		}
-
-		// Cancel new order when bidder id is the same as asker id
-		if (askingAgent->id == biddingAgent->id) {
-			order->status = OrderStatus::CANCELED;
-			break;
-		}
-
-		tradeVol = std::min({ order->volume, bestBid->volume });
-		if (tradeVol < 1) { break; }
-
-		tradeCost = roundTo(tradeVol * bestBid->price);
-
-		askingAgent->updateCash(tradeCost);
-
-		biddingAgent->upsertHolding(Holding(bestBid->price, tradeVol));
-
-		this->OB.fillOrder(bestBid, tradeVol);
-		this->OB.updateCurrentPrice(bestBid->price);
-
-		order->volume -= tradeVol;
-
-		this->OB.recordTrade(bestBid->price, tradeVol, OrderAction::ASK);
-		if (bestBid->volume == 0) {
-			it = this->OB.bidQueue.erase(it);
-		}
-		else { break; }
-	}
-
-	// Self trade protection killed this order before it could rest. Return the
-	// reserved shares and keep it out of the book.
-	if (order->status == OrderStatus::CANCELED) {
-		std::vector<Holding> returnableShares = order->getReturnableShares();
-		for (Holding h : returnableShares) { askingAgent->upsertHolding(h); }
-		return;
-	}
-
-	if (order->volume > 0) {
-		askingAgent->upsertActiveOrder(order);
-		this->OB.addOrder(order);
-	}
-	else {
-		order->status = OrderStatus::CLOSED;
 	}
 }
 

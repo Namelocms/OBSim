@@ -134,13 +134,13 @@ void Agent::actRandom() {
 			order = this->makeMarketBid();
 			// An agent that cannot afford or source the order simply does nothing
 			if (order == nullptr) { break; }
-			this->ME.matchMarketBid(order);
+			this->ME.match(order);
 			break;
 		case OrderType::LIMIT:
 			if (this->subType == AgentSubType::ALGO && this->activeBids.size() > 0) { break; }
 			order = this->makeLimitBid();
 			if (order == nullptr) { break; }
-			this->ME.matchLimitBid(order);
+			this->ME.match(order);
 			break;
 		}
 		break;
@@ -151,13 +151,13 @@ void Agent::actRandom() {
 			if (this->type == AgentType::INSTITUTION || this->subType == AgentSubType::ALGO) { break; }
 			order = this->makeMarketAsk();
 			if (order == nullptr) { break; }
-			this->ME.matchMarketAsk(order);
+			this->ME.match(order);
 			break;
 		case OrderType::LIMIT:
 			if (this->subType == AgentSubType::ALGO && this->activeAsks.size() > 0) { break; }
 			order = this->makeLimitAsk();
 			if (order == nullptr) { break; }
-			this->ME.matchLimitAsk(order);
+			this->ME.match(order);
 			break;
 		}
 		break;
@@ -194,12 +194,12 @@ void Agent::actFlatten() {
 		if (this->getTotalHoldings() < 1) { return; }
 		order = this->makeLimitAsk(true, true);
 		if (order == nullptr) { return; }
-		this->ME.matchLimitAsk(order);
+		this->ME.match(order);
 	}
 	else {
 		order = this->makeLimitBid(true, true);
 		if (order == nullptr) { return; }
-		this->ME.matchLimitBid(order);
+		this->ME.match(order);
 	}
 }
 OrderAction Agent::entrySide() const {
