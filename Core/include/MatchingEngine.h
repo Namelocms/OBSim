@@ -1,9 +1,34 @@
 #pragma once
 #include <memory>
+#include "Enums.h"
 
 class OrderBook;
 class Order;
 class Agent;
+enum class PrintKind;
+enum class TimeInForce;
+
+/* ---- Auctions (OrderModelPlan Step 3.1) ---- */
+
+/* How far above the last price a market-on-open or market-on-close BUY is escrowed, and so the
+*  most it will pay. A cash account cannot be allowed to spend without a bound; real brokers
+*  check an on-close buy against an estimate in the same way. A starting value. */
+inline constexpr double AUCTION_MARKET_COLLAR = 0.10;
+/* Minutes before the regular close after which on-close orders are no longer accepted, as on
+*  the major venues (15:50) */
+inline constexpr double CLOSE_ORDER_CUTOFF_MINUTES = 10.0;
+
+/* What a cross would do if run now: its price, the volume it would match, and what is left
+*  over on the heavier side */
+struct CrossResult {
+	double price = 0.0;
+	unsigned long long matched = 0;
+	unsigned long long buyVolume = 0;
+	unsigned long long sellVolume = 0;
+	/* BID if more is bid than offered at the price, ASK if the other way */
+	OrderAction imbalanceSide = OrderAction::BID;
+	unsigned long long imbalance = 0;
+};
 
 class MatchingEngine {
 public:
@@ -32,6 +57,14 @@ public:
 	*/
 	unsigned int fillableVolume(const std::shared_ptr<Order>& order) const;
 
+	/* Work out a cross over the given auction orders and the eligible continuous book, without
+	*  changing anything. Price maximises matched volume, then minimises the imbalance, then
+	*  sits nearest the reference, then is the lower -- how the Nasdaq Cross is specified. */
+	CrossResult indicativeCross(TimeInForce which, double reference) const;
+	/* Run a cross: match at one price, print once, and cancel whatever on-open or on-close
+	*  orders it did not fill. Continuous orders it part filled stay resting. */
+	CrossResult runCross(TimeInForce which, PrintKind kind, double reference);
+
 private:
 	/* Settle one executed leg between the incoming order and a resting one
 	*
@@ -54,7 +87,14 @@ private:
 	* fee reserve first if it has one, and books every part to the ledger. Does nothing with
 	* fees off.
 	*/
-	void chargeFees(Order& order, Agent& agent, bool isMaker, double price, unsigned int volume);
+	void chargeFees(Order& order, Agent& agent, bool isMaker, double price, unsigned int volume, bool auction = false);
+	/* Everything every fill does after cash and shares have moved: group events, fees, the
+	*  position baseline, margin re-checks and lending supply. One place, for both continuous
+	*  legs and auction legs. */
+	void afterFill(Order& taker, Agent& takerAgent, Order& maker, Agent& makerAgent, double price,
+		unsigned int volume, bool auction);
+	/* One matched pair in a cross, at the cross price */
+	void settleAuctionLeg(Order& bid, Agent& bidAgent, Order& ask, Agent& askAgent, double price, unsigned int volume);
 	/* Hand bought shares to the buyer: they cover its short first, fails before borrowed
 	*  shares, and only what is left becomes a holding (OrderModelPlan Step 1.4) */
 	void deliverShares(Agent& buyer, double price, unsigned int volume);

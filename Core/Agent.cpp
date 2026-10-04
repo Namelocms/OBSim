@@ -410,6 +410,7 @@ OrderRequest Agent::makeMarketBid() {
 	// A short agent's bid is a buy to cover, sized against what it owes rather than its cash
 	if (this->shortShares > 0) {
 		OrderRequest cover{ OrderAction::BID, OrderType::MARKET };
+		cover.sessions = this->defaultSessions();
 		int owed = int(Account::coverableShares(*this));
 		if (owed >= 1) { cover.volume = (unsigned int)randomInt(1, owed); }
 		return cover;
@@ -421,10 +422,12 @@ OrderRequest Agent::makeMarketBid() {
 
 	OrderRequest request{ OrderAction::BID, OrderType::MARKET };
 	request.volume = (unsigned int)chosenVol;
+	request.sessions = this->defaultSessions();
 	return request;
 }
 OrderRequest Agent::makeLimitBid(bool forceAggressive, bool fullSize) {
 	OrderRequest request{ OrderAction::BID, OrderType::LIMIT };
+	request.sessions = this->defaultSessions();
 
 	// Crossing orders are priced off the opposite touch, passive ones off the last trade
 	double chosenPrice = (forceAggressive || this->rollAggressive())
@@ -460,6 +463,7 @@ OrderRequest Agent::makeLimitBid(bool forceAggressive, bool fullSize) {
 }
 OrderRequest Agent::makeMarketAsk() {
 	OrderRequest request{ OrderAction::ASK, OrderType::MARKET };
+	request.sessions = this->defaultSessions();
 
 	int chosenVol = 1;
 	int totalHoldings = this->getTotalHoldings();
@@ -471,6 +475,7 @@ OrderRequest Agent::makeMarketAsk() {
 }
 OrderRequest Agent::makeLimitAsk(bool forceAggressive, bool fullSize) {
 	OrderRequest request{ OrderAction::ASK, OrderType::LIMIT };
+	request.sessions = this->defaultSessions();
 
 	// Crossing orders are priced off the opposite touch, passive ones off the last trade
 	double chosenPrice = (forceAggressive || this->rollAggressive())
@@ -504,6 +509,14 @@ OrderRequest Agent::shortSaleSize(OrderRequest request, bool fullSize) {
 	request.volume = fullSize ? cap : (unsigned int)randomInt(1, int(std::min<unsigned int>(cap, (unsigned int)INT_MAX)));
 	request.mark = exempt ? SaleMark::SHORT_EXEMPT : SaleMark::SHORT;
 	return request;
+}
+SessionMask Agent::defaultSessions() const {
+	if (!this->OB.features.auctions.regularOnlyAgentOrders) { return SESSIONS_ALL; }
+	switch (this->OB.session) {
+	case Session::REGULAR:   return SESSIONS_REGULAR_ONLY;
+	case Session::OVERNIGHT: return SESSIONS_ALL;
+	default:                 return SESSIONS_EXTENDED_HOURS;
+	}
 }
 void Agent::requoteStale(OrderAction side) {
 	const auto& mine = (side == OrderAction::BID) ? this->activeBids : this->activeAsks;

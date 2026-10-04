@@ -5,6 +5,7 @@
 #include "include/Util.h"
 #include "include/SimClock.h"
 #include "include/MarketCalendar.h"
+#include <algorithm>
 
 OrderBook::OrderBook(double currentPrice, unsigned int shareFloat) : clock(clock), currentPrice(currentPrice), shareFloat(shareFloat) {
 	this->setTickPrecision(currentPrice);
@@ -63,6 +64,21 @@ void OrderBook::cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent>
 	if (!order->groupId.empty()) {
 		this->groupEvents.push_back({ GroupEvent::Type::CANCEL, order->groupId, order->id, order->volume });
 	}
+
+	// An order waiting for a cross is not in either queue and not in the counters
+	if (order->inAuction) {
+		this->removeFromAuction(order);
+		if (order->side == OrderAction::BID) {
+			agent->updateCash(order->price * order->volume);
+			Account::releaseFeeReserve(*agent, *order);
+		}
+		else {
+			for (Holding h : order->getReturnableShares()) { agent->upsertHolding(h); }
+			if (order->mark == SaleMark::SHORT) { this->lending.releaseLocate(order->volume); }
+		}
+		agent->removeActiveOrder(order);
+		return;
+	}
 	if (order->side == OrderAction::BID) {
 		agent->updateCash(order->price * order->volume);
 		Account::releaseFeeReserve(*agent, *order);
@@ -111,6 +127,19 @@ void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 	// is called once per leg instead, from where both are still known.
 }
 
+void OrderBook::queueForAuction(const std::shared_ptr<Order>& order) {
+	order->inAuction = true;
+	this->auctionOrders.push_back(order);
+}
+
+bool OrderBook::removeFromAuction(const std::shared_ptr<Order>& order) {
+	auto it = std::find(this->auctionOrders.begin(), this->auctionOrders.end(), order);
+	if (it == this->auctionOrders.end()) { return false; }
+	this->auctionOrders.erase(it);
+	order->inAuction = false;
+	return true;
+}
+
 bool OrderBook::removeFromQueue(const std::shared_ptr<Order>& order) {
 	if (order == nullptr) { return false; }
 	if (order->side == OrderAction::BID) {
@@ -124,10 +153,10 @@ bool OrderBook::removeFromQueue(const std::shared_ptr<Order>& order) {
 	return true;
 }
 
-void OrderBook::recordTrade(double price, unsigned int volume, OrderAction aggressor) {
+void OrderBook::recordTrade(double price, unsigned int volume, OrderAction aggressor, PrintKind kind) {
 	if (volume == 0) { return; }
 	this->tickCount++;
-	this->tickHistory.push_back(TradePrint(price, volume, this->clock->simTimeMs, aggressor));
+	this->tickHistory.push_back(TradePrint(price, volume, this->clock->simTimeMs, aggressor, kind));
 
 	// Recorded for the broker to act on afterwards, never acted on here
 	this->pendingPrints.push_back(price);
@@ -223,6 +252,10 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->lending.reset();
 	this->pendingPrints.clear();
 	this->groupEvents.clear();
+	this->auctionOrders.clear();
+	this->officialOpen = 0.0;
+	this->officialClose = 0.0;
+	this->previousClose = 0.0;
 	this->dirtyAccounts.clear();
 	this->matchDepth = 0;
 	//this->orderHistory.clear();

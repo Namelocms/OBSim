@@ -53,4 +53,17 @@ struct Features {
 	struct Stops {
 		bool extendedHours = false;
 	} stops;
+
+	/* OrderModelPlan Step 3.1: the opening cross at 09:30 and the closing cross at 16:00, and the
+	*  on-open and on-close orders that wait for them. Off, trading is continuous from the
+	*  premarket open to the afterhours close, as it always was. */
+	struct Auctions {
+		bool enabled = false;
+		/* Decision D7: agents' orders carry the session a broker would give them -- placed in
+		*  the regular session, regular-session only; placed outside it, extended hours. A
+		*  regular-only order still resting outside its session is stepped over, which is what
+		*  leaves the book crossed for the opening cross to uncross. Off, every order may trade
+		*  in every session, as it always has. */
+		bool regularOnlyAgentOrders = false;
+	} auctions;
 };

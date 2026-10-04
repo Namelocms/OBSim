@@ -53,6 +53,8 @@ public:
 	std::string groupId;
 	/* A held OCO leg that shares its sibling's reservation rather than holding shares itself */
 	bool reservedByGroup = false;
+	/* Waiting in the exchange's auction queue for an opening or closing cross */
+	bool inAuction = false;
 
 
 	/* For an ask: long sale, located short, or exempt market maker short. Always LONG for a bid. */

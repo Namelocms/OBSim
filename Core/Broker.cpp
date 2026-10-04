@@ -50,7 +50,28 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 	// "all of it or none" into IOC would hand back a partial fill nobody agreed to.
 	const double nowMs = this->OB.clock->simTimeMs;
 	if (!isLimit && request.tif == TimeInForce::FOK) { return nullptr; }
-	TimeInForce tif = isLimit ? request.tif : TimeInForce::IOC;
+
+	// On-open and on-close orders wait for their cross (OrderModelPlan Step 3.1). An on-open
+	// order is taken any time before the open; an on-close one until the 15:50 cutoff.
+	const bool auction = (request.tif == TimeInForce::OPG || request.tif == TimeInForce::CLS);
+	if (auction) {
+		if (!this->OB.features.auctions.enabled) { return nullptr; }
+		if (request.tif == TimeInForce::OPG && this->OB.session == Session::REGULAR) { return nullptr; }
+		if (request.tif == TimeInForce::CLS) {
+			Session s = this->OB.session;
+			if (s != Session::PREMARKET && s != Session::REGULAR) { return nullptr; }
+			double close = MarketCalendar::sessionOpenMs(Session::REGULAR, MarketCalendar::dayIndex(nowMs))
+				+ MarketCalendar::sessionLengthMs(Session::REGULAR);
+			if (nowMs >= close - MarketCalendar::minutesToMs(CLOSE_ORDER_CUTOFF_MINUTES)) { return nullptr; }
+		}
+	}
+	// A market buy waiting for a cross is escrowed at its collar, which is also the most it pays
+	const double collarPrice = roundTo(this->OB.currentPrice * (1.0 + AUCTION_MARKET_COLLAR),
+		(this->OB.currentPrice < 1.0) ? 0.0001 : 0.01);
+	const bool escrowed = isLimit || (auction && request.side == OrderAction::BID);
+	const double escrowPrice = isLimit ? request.price : collarPrice;
+
+	TimeInForce tif = (isLimit || auction) ? request.tif : TimeInForce::IOC;
 	double expiresAtMs = 0.0;
 	switch (tif) {
 	case TimeInForce::DAY:
@@ -68,6 +89,9 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 		break;
 	case TimeInForce::FOK:
 		break;
+	case TimeInForce::OPG:
+	case TimeInForce::CLS:
+		break;   // cancelled by the cross if it does not fill there
 	}
 
 	std::vector<Holding> reserved;
@@ -80,16 +104,16 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 		&& request.volume <= Account::coverableShares(*agent);
 
 	if (request.side == OrderAction::BID) {
-		if (isLimit) {
+		if (escrowed) {
 			// A limit bid escrows its whole cost up front, at its own price. A cent of slack
 			// because the agent sized against buying power before the cost was rounded to the
 			// cent (and an endowment is not cent-rounded), so rounding can carry a floor-sized
 			// order up to half a cent past it. That must never get a valid order refused.
-			double escrow = roundTo(request.price * request.volume);
+			double escrow = roundTo(escrowPrice * request.volume);
 			// With fees on, the bid also escrows its worst-case fees, rounded up to the cent, so
 			// a cash account can never be driven below zero by what a fill costs
 			if (Account::feesEnabled(*agent)) {
-				double worst = Account::feeSchedule(*agent).worstCaseBuyFees(request.volume, request.price);
+				double worst = Account::feeSchedule(*agent).worstCaseBuyFees(request.volume, escrowPrice);
 				feeReserve = std::ceil(worst / CASH_PRECISION - 1e-9) * CASH_PRECISION;
 			}
 			if (!covering && escrow + feeReserve > Account::buyingPower(*agent) + CASH_PRECISION) { return nullptr; }
@@ -118,7 +142,7 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 	std::shared_ptr<Order> order = std::make_shared<Order>(
 		this->OB.makeId(ID_TYPE::ORDER),
 		agent->id,
-		isLimit ? request.price : -1.0,
+		isLimit ? request.price : ((auction && request.side == OrderAction::BID) ? collarPrice : -1.0),
 		request.volume,
 		nowMs,
 		request.side,
@@ -131,6 +155,13 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 	order->feeReserve = feeReserve;
 	order->mark = (request.side == OrderAction::ASK) ? request.mark : SaleMark::LONG;
 	order->groupId = groupId;
+
+	// Waits for its cross instead of matching now
+	if (auction) {
+		this->OB.queueForAuction(order);
+		agent->upsertActiveOrder(order);
+		return order;
+	}
 
 	// Fill or kill decides before anything trades, so a kill leaves the book untouched
 	if (tif == TimeInForce::FOK && this->ME.fillableVolume(order) < order->volume) {

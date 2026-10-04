@@ -41,11 +41,17 @@ enum class Session;
 */
 inline constexpr std::size_t TICK_HISTORY_MAX = 250'000;
 
+/* Where a print came from. A cross prints once, at its single clearing price, for everything
+*  it matched; the official open and close come from the crosses (OrderModelPlan Step 3.1). */
+enum class PrintKind { CONTINUOUS, OPEN_CROSS, CLOSE_CROSS, REOPEN_CROSS };
+
 struct TradePrint {
 	double price;
 	unsigned int volume;
 	double timeMs;
 	OrderAction aggressor;
+	/* Continuous trading, unless a cross. For a cross, aggressor is the side of the imbalance. */
+	PrintKind kind = PrintKind::CONTINUOUS;
 };
 struct CompareBid {
 public:
@@ -139,6 +145,21 @@ public:
 	std::vector<std::string> dirtyAccounts;
 	/* Fills and cancels of OCO and bracket members, for the broker to act on afterwards */
 	std::vector<GroupEvent> groupEvents;
+
+	// ---- Auctions (OrderModelPlan Step 3.1) ----
+
+	/* On-open and on-close orders waiting for their cross. Held by the exchange, out of the
+	*  continuous book, and counted in neither getNumBids nor getNumAsks. */
+	std::vector<std::shared_ptr<Order>> auctionOrders;
+	/* The day's official open and close, from the crosses. 0 until there has been one. */
+	double officialOpen = 0.0;
+	double officialClose = 0.0;
+	/* The previous day's official close: what the short sale restriction measures against */
+	double previousClose = 0.0;
+	/* Queue an on-open or on-close order for its cross */
+	void queueForAuction(const std::shared_ptr<Order>& order);
+	/* Take an order out of the auction queue, returning whether it was there */
+	bool removeFromAuction(const std::shared_ptr<Order>& order);
 	/* How deep inside MatchingEngine::match the engine currently is. The broker refuses to
 	*  fire a trigger while this is non-zero -- that is the whole re-entrancy rule. */
 	int matchDepth = 0;
@@ -195,7 +216,7 @@ public:
 	* compensating push after each matching loop -- an arrangement that lost a print
 	* whenever a cash-constrained aggressor left its last leg partially filled.
 	*/
-	void recordTrade(double price, unsigned int volume, OrderAction aggressor);
+	void recordTrade(double price, unsigned int volume, OrderAction aggressor, PrintKind kind = PrintKind::CONTINUOUS);
 	/* Cancel every resting order whose expiry has been reached, return how many were expired
 	*
 	* Called when an expiring session boundary is crossed. Every cancellation goes

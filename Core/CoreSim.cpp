@@ -711,6 +711,17 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 			this->broker.accrueMarginInterest();
 			this->broker.accrueBorrowFees();
 		}
+		// The closing cross, before anything expires at the close: a day order resting in the
+		// book takes part in it, then expires if it did not trade
+		if (endingSession == Session::REGULAR && this->OB.features.auctions.enabled) {
+			CrossResult cross = this->ME.runCross(TimeInForce::CLS, PrintKind::CLOSE_CROSS, this->OB.currentPrice);
+			this->OB.previousClose = this->OB.officialClose;
+			this->OB.officialClose = (cross.matched > 0) ? cross.price : this->OB.currentPrice;
+			this->broker.processTriggers();
+			if (this->onLog && cross.matched > 0) {
+				this->onLog({ LogEntry::Kind::FILL, boundaryMs, "CLOSING CROSS " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
+			}
+		}
 		// Market makers borrow against their exempt shorts at the close...
 		if (endingSession == Session::REGULAR) { this->broker.borrowForFails(); }
 
@@ -722,6 +733,16 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 		}
 
 		this->OB.session = MarketCalendar::sessionAt(boundaryMs);
+		// The opening cross: on-open orders and the book's regular-session orders, uncrossed at
+		// one price before continuous trading starts
+		if (this->OB.session == Session::REGULAR && this->OB.features.auctions.enabled) {
+			CrossResult cross = this->ME.runCross(TimeInForce::OPG, PrintKind::OPEN_CROSS, this->OB.currentPrice);
+			this->OB.officialOpen = (cross.matched > 0) ? cross.price : this->OB.currentPrice;
+			this->broker.processTriggers();
+			if (this->onLog && cross.matched > 0) {
+				this->onLog({ LogEntry::Kind::FILL, boundaryMs, "OPENING CROSS " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
+			}
+		}
 		// ...and whatever is still unborrowed by the next open is bought in then
 		if (this->OB.session == Session::REGULAR) {
 			this->broker.closeOutFails();

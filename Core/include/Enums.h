@@ -13,8 +13,11 @@ enum class OrderType { MARKET, LIMIT };
 * IOC  -- immediate or cancel: match what it can on arrival, cancel the rest. Every market
 *         order is IOC
 * FOK  -- fill or kill: fills completely on arrival or not at all, and touches nothing if not
+* OPG  -- on the open: waits for the next opening cross, trades there or is cancelled
+* CLS  -- on the close: waits for the closing cross, trades there or is cancelled. A market
+*         OPG/CLS order is market-on-open/close (MOO/MOC), a limit one LOO/LOC.
 */
-enum class TimeInForce { DAY, GTC, GTD, IOC, FOK };
+enum class TimeInForce { DAY, GTC, GTD, IOC, FOK, OPG, CLS };
 /* How a sale is marked, as Reg SHO Rule 200(g) requires of every sell order
 *
 * LONG          the seller owns the shares, and they are reserved in the order
@@ -90,7 +93,9 @@ public:
 		{TimeInForce::GTC, "GTC"},
 		{TimeInForce::GTD, "GTD"},
 		{TimeInForce::IOC, "IOC"},
-		{TimeInForce::FOK, "FOK"}
+		{TimeInForce::FOK, "FOK"},
+		{TimeInForce::OPG, "OPG"},
+		{TimeInForce::CLS, "CLS"}
 	};
 	std::unordered_map<ID_TYPE, std::string> idTypeString = {
 		{ID_TYPE::ORDER, "ORDER"},

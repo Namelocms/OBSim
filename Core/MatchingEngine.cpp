@@ -8,6 +8,9 @@
 #include "include/Account.h"
 #include "include/FeeSchedule.h"
 #include "include/Ledger.h"
+#include "include/MarketCalendar.h"
+#include <limits>
+#include <cmath>
 
 MatchingEngine::MatchingEngine(OrderBook& ob) : OB(ob) {}
 
@@ -161,33 +164,7 @@ double MatchingEngine::settleLeg(const std::shared_ptr<Order>& incoming, const s
 	this->OB.fillOrder(resting, volume);
 	this->OB.recordTrade(price, volume, incoming->side);
 
-	// A fill on an OCO or bracket member is for the broker to act on once matching is done
-	if (!incoming->groupId.empty()) { this->OB.groupEvents.push_back({ GroupEvent::Type::FILL, incoming->groupId, incoming->id, volume }); }
-	if (!resting->groupId.empty()) { this->OB.groupEvents.push_back({ GroupEvent::Type::FILL, resting->groupId, resting->id, volume }); }
-
-	// Fees, once per side of every leg: the incoming order took liquidity, the resting one made it
-	this->chargeFees(*incoming, *incomingAgent, false, price, volume);
-	this->chargeFees(*resting, *restingAgent, true, price, volume);
-	// A resting bid that just closed has no further use for what is left of its fee reserve
-	if (resting->status == OrderStatus::CLOSED && resting->side == OrderAction::BID) {
-		Account::releaseFeeReserve(*restingAgent, *resting);
-	}
-
-	// A fill is the only thing that changes a net position, so it is where an opening is seen
-	incomingAgent->notePositionChange();
-	restingAgent->notePositionChange();
-
-	// Both accounts' margin standing may have moved; the broker re-checks them once matching
-	// has returned
-	if (this->OB.features.margin.enabled) {
-		this->OB.dirtyAccounts.push_back(incomingAgent->id);
-		this->OB.dirtyAccounts.push_back(restingAgent->id);
-	}
-	// And what each can lend has changed with what it holds
-	if (Account::shortingEnabled(*incomingAgent)) {
-		this->OB.lending.refreshLender(*incomingAgent);
-		this->OB.lending.refreshLender(*restingAgent);
-	}
+	this->afterFill(*incoming, *incomingAgent, *resting, *restingAgent, price, volume, false);
 
 	return cost;
 }
@@ -250,7 +227,7 @@ void MatchingEngine::finishIncoming(const std::shared_ptr<Order>& order, const s
 	}
 }
 
-void MatchingEngine::chargeFees(Order& order, Agent& agent, bool isMaker, double price, unsigned int volume) {
+void MatchingEngine::chargeFees(Order& order, Agent& agent, bool isMaker, double price, unsigned int volume, bool auction) {
 	if (!Account::feesEnabled(agent)) { return; }
 	const FeeSchedule& fees = Account::feeSchedule(agent);
 	Ledger& ledger = this->OB.ledger;
@@ -265,7 +242,8 @@ void MatchingEngine::chargeFees(Order& order, Agent& agent, bool isMaker, double
 	order.commissionAccrued = commissionTotal;
 
 	// Maker-taker is per share, per leg. A rebate is a negative fee.
-	double exchange = isMaker ? -fees.makerRebate(price) * volume : fees.takerFee(price) * volume;
+	// A cross has no maker or taker; its fee schedule is the exchange's own and is left at zero
+	double exchange = auction ? 0.0 : (isMaker ? -fees.makerRebate(price) * volume : fees.takerFee(price) * volume);
 
 	// Regulators charge the seller only
 	double regulatory = 0.0;
@@ -315,4 +293,219 @@ void MatchingEngine::openShort(const Order& sale, Agent& seller, unsigned int vo
 	this->OB.lending.shortSoldBy[int(seller.type)][int(seller.subType)] += volume;
 	if (sale.mark == SaleMark::SHORT) { this->OB.lending.openLoan(seller, volume, this->OB.clock->simTimeMs); }
 	// SHORT_EXEMPT: owed but not borrowed, a fail until Broker::closeOutFails deals with it
+}
+
+void MatchingEngine::afterFill(Order& taker, Agent& takerAgent, Order& maker, Agent& makerAgent, double price,
+	unsigned int volume, bool auction) {
+	// A fill on an OCO or bracket member is for the broker to act on once matching is done
+	if (!taker.groupId.empty()) { this->OB.groupEvents.push_back({ GroupEvent::Type::FILL, taker.groupId, taker.id, volume }); }
+	if (!maker.groupId.empty()) { this->OB.groupEvents.push_back({ GroupEvent::Type::FILL, maker.groupId, maker.id, volume }); }
+
+	// Fees, once per side of every leg: the taker took liquidity, the maker made it
+	this->chargeFees(taker, takerAgent, false, price, volume, auction);
+	this->chargeFees(maker, makerAgent, true, price, volume, auction);
+	// A bid that just closed has no further use for what is left of its fee reserve
+	if (maker.status == OrderStatus::CLOSED && maker.side == OrderAction::BID) { Account::releaseFeeReserve(makerAgent, maker); }
+	if (auction && taker.volume == 0 && taker.side == OrderAction::BID) { Account::releaseFeeReserve(takerAgent, taker); }
+
+	// A fill is the only thing that changes a net position, so it is where an opening is seen
+	takerAgent.notePositionChange();
+	makerAgent.notePositionChange();
+
+	// Both accounts' margin standing may have moved; the broker re-checks them once matching
+	// has returned
+	if (this->OB.features.margin.enabled) {
+		this->OB.dirtyAccounts.push_back(takerAgent.id);
+		this->OB.dirtyAccounts.push_back(makerAgent.id);
+	}
+	// And what each can lend has changed with what it holds
+	if (Account::shortingEnabled(takerAgent)) {
+		this->OB.lending.refreshLender(takerAgent);
+		this->OB.lending.refreshLender(makerAgent);
+	}
+}
+
+// ---- Auctions (OrderModelPlan Step 3.1) ----
+
+namespace {
+
+/* One order's part in a cross */
+struct CrossEntry {
+	std::shared_ptr<Order> order;
+	/* The price it will trade at worst: a bid's limit (+inf for a market sell... no: a market
+	*  BUY is bounded by its collar escrow), an ask's limit (0 for a market sell) */
+	double limit;
+	bool market;
+};
+
+}
+
+static void gatherCross(const OrderBook& ob, TimeInForce which, std::vector<CrossEntry>& bids, std::vector<CrossEntry>& asks) {
+	for (const std::shared_ptr<Order>& o : ob.auctionOrders) {
+		if (o->status != OrderStatus::OPEN || o->tif != which || o->volume == 0) { continue; }
+		bool market = (o->type == OrderType::MARKET);
+		if (o->side == OrderAction::BID) { bids.push_back({ o, o->price, market }); }   // a market buy's price is its collar
+		else { asks.push_back({ o, market ? 0.0 : o->price, market }); }
+	}
+	// The continuous book takes part, as it does in the real crosses: every resting order
+	// that may trade in the regular session
+	for (const std::shared_ptr<Order>& o : ob.bidQueue) {
+		if (o->status == OrderStatus::OPEN && o->volume > 0 && o->eligibleIn(Session::REGULAR)) { bids.push_back({ o, o->price, false }); }
+	}
+	for (const std::shared_ptr<Order>& o : ob.askQueue) {
+		if (o->status == OrderStatus::OPEN && o->volume > 0 && o->eligibleIn(Session::REGULAR)) { asks.push_back({ o, o->price, false }); }
+	}
+}
+
+CrossResult MatchingEngine::indicativeCross(TimeInForce which, double reference) const {
+	CrossResult best;
+	std::vector<CrossEntry> bids, asks;
+	gatherCross(this->OB, which, bids, asks);
+	if (bids.empty() || asks.empty()) { return best; }
+
+	std::vector<double> candidates;
+	for (const CrossEntry& e : bids) { candidates.push_back(e.limit); }
+	for (const CrossEntry& e : asks) { if (!e.market) { candidates.push_back(e.limit); } }
+	if (reference > 0.0) { candidates.push_back(reference); }
+	std::sort(candidates.begin(), candidates.end());
+	candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+	bool found = false;
+	for (double p : candidates) {
+		if (!(p > 0.0)) { continue; }
+		unsigned long long buy = 0, sell = 0;
+		for (const CrossEntry& e : bids) { if (e.limit >= p - 1e-12) { buy += e.order->volume; } }
+		for (const CrossEntry& e : asks) { if (e.limit <= p + 1e-12) { sell += e.order->volume; } }
+		unsigned long long matched = std::min(buy, sell);
+		unsigned long long imbalance = (buy > sell) ? buy - sell : sell - buy;
+		bool better = !found
+			|| matched > best.matched
+			|| (matched == best.matched && imbalance < best.imbalance)
+			|| (matched == best.matched && imbalance == best.imbalance
+				&& std::fabs(p - reference) < std::fabs(best.price - reference) - 1e-12);
+		if (better) {
+			found = true;
+			best.price = p;
+			best.matched = matched;
+			best.buyVolume = buy;
+			best.sellVolume = sell;
+			best.imbalance = imbalance;
+			best.imbalanceSide = (buy >= sell) ? OrderAction::BID : OrderAction::ASK;
+		}
+	}
+	if (best.matched == 0) { best = CrossResult(); }
+	return best;
+}
+
+void MatchingEngine::settleAuctionLeg(Order& bid, Agent& bidAgent, Order& ask, Agent& askAgent, double price, unsigned int volume) {
+	double cost = roundTo(volume * price);
+
+	// Every bid in a cross was escrowed at its limit (a market buy at its collar), so each gets
+	// back the difference to the single cross price -- including a bid that was resting in the
+	// book, which continuous trading never has to do
+	double refund = roundTo(volume * (bid.price - price));
+	if (refund > 0) { bidAgent.updateCash(refund); }
+	askAgent.updateCash(cost);
+	this->deliverShares(bidAgent, price, volume);
+	if (ask.isShortSale()) { this->openShort(ask, askAgent, volume); }
+
+	// Each side's own volume moves here; the book's counters are kept by fillOrder for book
+	// orders, and auction orders are not in them
+	auto fill = [this](Order& o, Agent& agent, unsigned int v) {
+		if (o.inAuction) {
+			o.volume -= v;
+			if (o.volume == 0) { o.status = OrderStatus::CLOSED; }
+		}
+		else {
+			std::shared_ptr<Order> self = nullptr;
+			const auto& mine = (o.side == OrderAction::BID) ? agent.activeBids : agent.activeAsks;
+			auto it = mine.find(o.id);
+			if (it != mine.end()) { self = it->second; }
+			if (self != nullptr) { this->OB.fillOrder(self, v); }
+			else { o.volume -= v; }
+		}
+	};
+	fill(bid, bidAgent, volume);
+	fill(ask, askAgent, volume);
+
+	// No maker or taker in a cross; afterFill only needs the two sides
+	this->afterFill(bid, bidAgent, ask, askAgent, price, volume, true);
+}
+
+CrossResult MatchingEngine::runCross(TimeInForce which, PrintKind kind, double reference) {
+	CrossResult result = this->indicativeCross(which, reference);
+	++this->OB.matchDepth;
+
+	if (result.matched > 0) {
+		std::vector<CrossEntry> bids, asks;
+		gatherCross(this->OB, which, bids, asks);
+		double p = result.price;
+
+		// Who trades: everything priced at or through the cross price. Market orders first, then
+		// by price, then by time, then by id
+		auto eligibleBid = [p](const CrossEntry& e) { return e.limit >= p - 1e-12; };
+		auto eligibleAsk = [p](const CrossEntry& e) { return e.limit <= p + 1e-12; };
+		bids.erase(std::remove_if(bids.begin(), bids.end(), [&](const CrossEntry& e) { return !eligibleBid(e); }), bids.end());
+		asks.erase(std::remove_if(asks.begin(), asks.end(), [&](const CrossEntry& e) { return !eligibleAsk(e); }), asks.end());
+		auto priority = [](bool bidSide) {
+			return [bidSide](const CrossEntry& a, const CrossEntry& b) {
+				if (a.market != b.market) { return a.market; }
+				if (a.limit != b.limit) { return bidSide ? a.limit > b.limit : a.limit < b.limit; }
+				if (a.order->timestamp != b.order->timestamp) { return a.order->timestamp < b.order->timestamp; }
+				return a.order->id < b.order->id;
+			};
+		};
+		std::sort(bids.begin(), bids.end(), priority(true));
+		std::sort(asks.begin(), asks.end(), priority(false));
+
+		// Pair them off in priority order. An agent never trades with itself: a pair that would
+		// is stepped over, and the bid looks for the next seller.
+		unsigned long long remaining = result.matched, traded = 0;
+		for (CrossEntry& b : bids) {
+			if (remaining == 0) { break; }
+			std::shared_ptr<Agent> bidAgent = this->OB.getAgent(b.order->agentId);
+			if (bidAgent == nullptr) { continue; }
+			for (CrossEntry& a : asks) {
+				if (remaining == 0 || b.order->volume == 0) { break; }
+				if (a.order->volume == 0 || a.order->agentId == b.order->agentId) { continue; }
+				std::shared_ptr<Agent> askAgent = this->OB.getAgent(a.order->agentId);
+				if (askAgent == nullptr) { continue; }
+				unsigned int v = (unsigned int)std::min<unsigned long long>({ b.order->volume, a.order->volume, remaining });
+				this->settleAuctionLeg(*b.order, *bidAgent, *a.order, *askAgent, p, v);
+				remaining -= v;
+				traded += v;
+			}
+		}
+
+		// Book orders the cross filled in full leave their queues
+		for (auto it = this->OB.bidQueue.begin(); it != this->OB.bidQueue.end();) {
+			if ((*it)->status == OrderStatus::CLOSED) { it = this->OB.bidQueue.erase(it); } else { ++it; }
+		}
+		for (auto it = this->OB.askQueue.begin(); it != this->OB.askQueue.end();) {
+			if ((*it)->status == OrderStatus::CLOSED) { it = this->OB.askQueue.erase(it); } else { ++it; }
+		}
+
+		// One print for the whole cross, at its one price
+		if (traded > 0) {
+			this->OB.updateCurrentPrice(p);
+			this->OB.recordTrade(p, (unsigned int)traded, result.imbalanceSide, kind);
+		}
+		result.matched = traded;
+	}
+
+	// Whatever on-open or on-close orders the cross did not fill are cancelled now
+	std::vector<std::shared_ptr<Order>> leftover;
+	for (const std::shared_ptr<Order>& o : this->OB.auctionOrders) { if (o->tif == which) { leftover.push_back(o); } }
+	for (const std::shared_ptr<Order>& o : leftover) {
+		std::shared_ptr<Agent> agent = this->OB.getAgent(o->agentId);
+		if (o->status == OrderStatus::CLOSED) {
+			this->OB.removeFromAuction(o);
+			if (agent != nullptr) { agent->removeActiveOrder(o); Account::releaseFeeReserve(*agent, *o); }
+		}
+		else if (agent != nullptr) { this->OB.cancelOrder(o, agent); }
+		else { this->OB.removeFromAuction(o); }
+	}
+
+	--this->OB.matchDepth;
+	return result;
 }

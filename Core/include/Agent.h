@@ -657,6 +657,9 @@ public:
 	*  empty if it cannot short. Bounded by margin and, without the market maker exemption, by
 	*  what the lending pool can locate. */
 	OrderRequest shortSaleSize(OrderRequest request, bool fullSize);
+	/* The sessions a broker would give an order placed now (D7, Features::auctions): regular
+	*  only during the regular session, extended hours outside it. All sessions with it off. */
+	SessionMask defaultSessions() const;
 	/* Re-price this agent's resting quote on one side if the market has left it behind
 	*
 	* ALGO only, and only with Features::agentReplace on. Prices the new quote exactly as a
