@@ -12,6 +12,7 @@
 #include "include/FeeSchedule.h"
 #include <cmath>
 #include <unordered_set>
+#include <algorithm>
 #include "include/Ledger.h"
 
 Broker::Broker(OrderBook& ob, MatchingEngine& me) : OB(ob), ME(me) {}
@@ -350,4 +351,60 @@ void Broker::accrueMarginInterest() {
 		this->stats.interestCharged += interest;
 		this->OB.dirtyAccounts.push_back(agent->id);
 	}
+}
+
+// ---- Lending (OrderModelPlan Step 1.3) ----
+
+void Broker::accrueBorrowFees() {
+	if (!this->OB.features.shorting.enabled || !this->OB.features.margin.enabled) { return; }
+	++this->stats.borrowFeeDays;
+
+	// The once-a-day rebuild corrects contributions that drifted as the price moved retail
+	// accounts across the margin line without them trading
+	StockLoan& desk = this->OB.lending;
+	desk.rebuildSupply(this->OB.agents);
+
+	double price = this->OB.currentPrice;
+	double rate = StockLoan::feeRate(desk.utilisation());
+
+	// Charge borrowers, in id order so the run is reproducible whatever the map's hash order
+	std::vector<std::shared_ptr<Agent>> borrowers, lenders;
+	for (const auto& kv : this->OB.agents) {
+		if (kv.second == nullptr) { continue; }
+		if (kv.second->borrowedShares > 0) { borrowers.push_back(kv.second); }
+		if (desk.institutionalContribution(kv.first) > 0.0) { lenders.push_back(kv.second); }
+	}
+	auto byId = [](const std::shared_ptr<Agent>& a, const std::shared_ptr<Agent>& b) { return a->id < b->id; };
+	std::sort(borrowers.begin(), borrowers.end(), byId);
+	std::sort(lenders.begin(), lenders.end(), byId);
+
+	double charged = 0.0;
+	for (const std::shared_ptr<Agent>& b : borrowers) {
+		double fee = roundTo(double(b->borrowedShares) * price * rate / 360.0);
+		if (fee <= 0.0) { continue; }
+		b->updateCash(-fee);
+		charged += fee;
+		this->OB.dirtyAccounts.push_back(b->id);
+	}
+	if (charged <= 0.0) { return; }
+	this->stats.borrowFeesCharged += charged;
+
+	// Institutional lenders earn their share of the pool's fee, less the programme's cut.
+	// Retail shares were rehypothecated: that part of the fee is the broker's.
+	double supply = desk.supply();
+	double instShare = (supply > 0.0) ? desk.institutionalSupply / supply : 0.0;
+	double toLenders = charged * instShare * (1.0 - BORROW_PROGRAMME_SHARE);
+	double paid = 0.0;
+	if (desk.institutionalSupply > 0.0) {
+		for (const std::shared_ptr<Agent>& l : lenders) {
+			double cut = roundTo(toLenders * desk.institutionalContribution(l->id) / desk.institutionalSupply);
+			if (cut <= 0.0) { continue; }
+			l->updateCash(cut);
+			paid += cut;
+			this->OB.dirtyAccounts.push_back(l->id);
+		}
+	}
+	this->stats.borrowFeesToLenders += paid;
+	// Whatever was not paid out, rounding included, stayed with the house
+	this->OB.ledger.borrowFees += charged - paid;
 }

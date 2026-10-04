@@ -429,6 +429,17 @@ public:
 	double participationThreshold;
 	/* Agent's buying power */
 	double cash;
+	/* Shares this agent has sold short and still owes (OrderModelPlan Step 1.4)
+	*
+	* Kept as a count of its own, never as negative holdings: holdings is a map keyed by lot
+	* price and every reader of it assumes the volumes are positive.
+	*/
+	unsigned int shortShares = 0;
+	/* How much of shortShares is covered by a stock loan. The rest is a fail-to-deliver: a
+	*  market maker's exempt short that has not been borrowed yet. */
+	unsigned int borrowedShares = 0;
+	/* Shares this agent must buy back now, because its loan was recalled or its fail is due */
+	unsigned int buyInDue = 0;
 	/* Agent's market sentiment */
 	double sentiment;
 	/* Time-weighted average of this agent's sentiment, half-life SENTIMENT_EWMA_HALFLIFE_MINUTES

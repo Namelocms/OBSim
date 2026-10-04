@@ -12,6 +12,7 @@
 #include "Snapshot.h"
 #include "Ledger.h"
 #include "Features.h"
+#include "StockLoan.h"
 
 class Agent;
 class SimClock;
@@ -120,6 +121,8 @@ public:
 	Ledger ledger;
 	/* Which order model mechanisms are switched on. Configuration, so a reset keeps it. */
 	Features features;
+	/* The pool short sellers borrow from (OrderModelPlan Step 1.3) */
+	StockLoan lending;
 	/* Unit-dollars-to-money multiplier for this run, mirrored from CoreSim::cashScale so the
 	*  account rules can test a dollar threshold against the person an agent stands for */
 	double cashScale = 1.0;

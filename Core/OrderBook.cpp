@@ -216,6 +216,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->wakeQueue.clear();
 	this->ledger.reset();
 	this->cashScale = 1.0;
+	this->lending.reset();
 	this->printRangeValid = false;
 	this->dirtyAccounts.clear();
 	this->matchDepth = 0;

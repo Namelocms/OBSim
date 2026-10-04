@@ -38,4 +38,10 @@ struct Features {
 	struct Margin {
 		bool enabled = false;
 	} margin;
+
+	/* OrderModelPlan Steps 1.3 and 1.4: securities lending and short selling. Requires margin,
+	*  since Reg T only allows a short in a margin account; with margin off this does nothing. */
+	struct Shorting {
+		bool enabled = false;
+	} shorting;
 };

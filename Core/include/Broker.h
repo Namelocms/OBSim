@@ -94,6 +94,12 @@ struct BrokerStats {
 	/* Margin interest charged, in total, across all accounts, and the days it was accrued on */
 	double interestCharged = 0.0;
 	long long interestDays = 0;
+
+	// ---- Lending (OrderModelPlan Step 1.3) ----
+	/* Borrow fees charged to borrowers, paid to institutional lenders, and kept by the house */
+	double borrowFeesCharged = 0.0;
+	double borrowFeesToLenders = 0.0;
+	long long borrowFeeDays = 0;
 };
 
 /* Most rounds one pump of the trigger book may run before it stops and says so
@@ -166,6 +172,10 @@ public:
 	void processTriggers();
 	/* Charge every margin debit a day of interest, on a 360 day year, and re-check the accounts */
 	void accrueMarginInterest();
+	/* Charge every stock loan a day of borrow fee at today's utilisation, pay institutional
+	*  lenders their share pro rata, and book the rest -- the programme's cut and every retail
+	*  rehypothecation fee -- to the house. Rebuilds the lendable supply first. */
+	void accrueBorrowFees();
 	/* Clear the triggers and stats for a new run */
 	void reset();
 

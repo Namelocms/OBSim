@@ -31,7 +31,11 @@ unsigned long long longShares(const Agent& agent) {
 }
 
 long long netShares(const Agent& agent) {
-	return (long long)longShares(agent);
+	return (long long)longShares(agent) - (long long)agent.shortShares;
+}
+
+bool shortingEnabled(const Agent& agent) {
+	return agent.OB.features.shorting.enabled && agent.OB.features.margin.enabled;
 }
 
 bool canSellShort(const Agent& agent) {
@@ -40,7 +44,7 @@ bool canSellShort(const Agent& agent) {
 }
 
 double equity(const Agent& agent, double price) {
-	return agent.cash + escrowedCash(agent) + double(longShares(agent)) * price;
+	return agent.cash + escrowedCash(agent) + (double(longShares(agent)) - double(agent.shortShares)) * price;
 }
 
 double buyingPower(const Agent& agent) {

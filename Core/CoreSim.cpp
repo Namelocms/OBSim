@@ -701,7 +701,10 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 		// PREMARKET is skipped, it rolls into REGULAR the way it does in real markets.
 		// A day's margin interest, once per day, at the afterhours close: the boundary every
 		// day has, whether or not its overnight is simulated
-		if (endingSession == Session::AFTERHOURS) { this->broker.accrueMarginInterest(); }
+		if (endingSession == Session::AFTERHOURS) {
+			this->broker.accrueMarginInterest();
+			this->broker.accrueBorrowFees();
+		}
 
 		if (MarketCalendar::expiresAtSessionEnd(endingSession)) {
 			unsigned int expiredCount = this->OB.expireOrders(boundaryMs);
@@ -1021,7 +1024,8 @@ bool CoreSim::rollTransientPersonality(std::shared_ptr<Agent> agent, double simT
 	// would destroy shares and silently dropping orders would strand their escrow, and
 	// either way it would hide the real bug, which is a slot pooled before it was flat.
 	if (!agent->holdings.empty() || !agent->activeBids.empty() || !agent->activeAsks.empty()
-		|| this->OB.agentHasRestingOrders(agent->id)) {
+		|| this->OB.agentHasRestingOrders(agent->id)
+		|| agent->shortShares > 0 || agent->borrowedShares > 0 || agent->buyInDue > 0) {
 		if (this->onLog) {
 			this->onLog({ LogEntry::Kind::HOLD, simTimeMs,
 				"REFUSED to reroll unclean transient slot " + agent->id });

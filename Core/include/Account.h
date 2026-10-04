@@ -61,8 +61,11 @@ double escrowedCash(const Agent& agent);
 /* Shares this account owns: those it holds plus those reserved in its open asks */
 unsigned long long longShares(const Agent& agent);
 
-/* Signed net position in shares: long minus short. Long only until OrderModelPlan Step 1.4. */
+/* Signed net position in shares: long minus short */
 long long netShares(const Agent& agent);
+
+/* Are short selling and lending switched on? They need margin on as well. */
+bool shortingEnabled(const Agent& agent);
 
 /* Could this account open a short position right now?
 *
@@ -74,7 +77,7 @@ bool canSellShort(const Agent& agent);
 
 /* What the account is worth at the given price
 *
-*     equity = cash + escrowedCash + longShares * price
+*     equity = cash + escrowedCash + (longShares - shortShares) * price
 */
 double equity(const Agent& agent, double price);
 
