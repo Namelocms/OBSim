@@ -448,6 +448,12 @@ void CoreSim::initAgents(unsigned int _agentStartCount) {
 	// The account rules test dollar thresholds in unit dollars, against this
 	this->OB.cashScale = this->cashScale;
 
+	// Short sellers can only locate what the lending pool has been told about. Built once
+	// everyone holds their starting position; consumes no RNG.
+	if (this->OB.features.shorting.enabled && this->OB.features.margin.enabled) {
+		this->OB.lending.rebuildSupply(this->OB.agents);
+	}
+
 	// Drawn last, once every resident exists. See rollRunTransientFraction.
 	this->rollRunTransientFraction();
 }
@@ -705,6 +711,8 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 			this->broker.accrueMarginInterest();
 			this->broker.accrueBorrowFees();
 		}
+		// Market makers borrow against their exempt shorts at the close...
+		if (endingSession == Session::REGULAR) { this->broker.borrowForFails(); }
 
 		if (MarketCalendar::expiresAtSessionEnd(endingSession)) {
 			unsigned int expiredCount = this->OB.expireOrders(boundaryMs);
@@ -714,6 +722,11 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 		}
 
 		this->OB.session = MarketCalendar::sessionAt(boundaryMs);
+		// ...and whatever is still unborrowed by the next open is bought in then
+		if (this->OB.session == Session::REGULAR) {
+			this->broker.closeOutFails();
+			this->broker.processTriggers();
+		}
 		if (this->onLog) {
 			EnumStrings es;
 			this->onLog({ LogEntry::Kind::HOLD, boundaryMs, "SESSION " + es.sessionString[this->OB.session] });
@@ -907,7 +920,8 @@ void CoreSim::updateTransientLifecycle(std::shared_ptr<Agent> agent, double simT
 	// OrderBook::agentHasRestingOrders is the authoritative one and is used where it matters,
 	// on reroll -- running it here would walk the whole book for every transient on every
 	// sweep, to answer a question the agent already knows the answer to.
-	bool clean = agent->holdings.empty() && agent->activeBids.empty() && agent->activeAsks.empty();
+	bool clean = agent->holdings.empty() && agent->activeBids.empty() && agent->activeAsks.empty()
+		&& agent->shortShares == 0;
 
 	// A transient agent with nothing left is finished, whether it chose to leave or went
 	// broke. BANKRUPT is only ever set with no cash, no holdings and no orders, so a
@@ -974,14 +988,14 @@ void CoreSim::beginTransientDeparture(std::shared_ptr<Agent> agent, double simTi
 	// A flat agent has nothing to close, so every order it has resting could only open a new
 	// position -- on either side, once agents can short. With the position-derived bias a
 	// flat agent's bias is 0, which entrySide reads as long, so the other side is added here.
-	if (this->OB.features.adversityFromEntry && agent->directionalBias() == 0.0) {
+	if (agent->directionalBias() == 0.0) {
 		const auto& other = (entry == OrderAction::BID) ? agent->activeAsks : agent->activeBids;
 		for (const auto& kv : other) { toCancel.push_back(kv.second); }
 	}
 	for (const std::shared_ptr<Order>& order : toCancel) { this->broker.cancel(order, agent); }
 
 	// An agent that arrived, never filled, and left is already clean
-	if (agent->holdings.empty() && agent->activeBids.empty() && agent->activeAsks.empty()) {
+	if (agent->holdings.empty() && agent->activeBids.empty() && agent->activeAsks.empty() && agent->shortShares == 0) {
 		this->poolTransientSlot(agent);
 	}
 }
@@ -1084,7 +1098,7 @@ bool CoreSim::rollTransientPersonality(std::shared_ptr<Agent> agent, double simT
 	// before Step 1.4, so until then every arrival takes the first branch and consumes the
 	// RNG it always did.
 	double conviction = randomDouble(TRANSIENT_ARRIVAL_SENTIMENT_MIN, TRANSIENT_ARRIVAL_SENTIMENT_MAX);
-	if (this->OB.features.adversityFromEntry && Account::canSellShort(*agent)) {
+	if (Account::canSellShort(*agent)) {
 		double side = (randomInt(0, 1) == 0) ? 1.0 : -1.0;
 		agent->sentiment = std::clamp(this->OB.marketNeutralSentiment + side * conviction, -1.0, 1.0);
 	}

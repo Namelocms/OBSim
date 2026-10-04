@@ -651,6 +651,10 @@ public:
 	OrderRequest makeMarketAsk();
 	/* Decide a random limit ask, see makeLimitBid for forceAggressive */
 	OrderRequest makeLimitAsk(bool forceAggressive = false, bool fullSize = false);
+	/* Size and mark a short sale for an agent with nothing to sell long, or leave the request
+	*  empty if it cannot short. Bounded by margin and, without the market maker exemption, by
+	*  what the lending pool can locate. */
+	OrderRequest shortSaleSize(OrderRequest request, bool fullSize);
 	/* Re-price this agent's resting quote on one side if the market has left it behind
 	*
 	* ALGO only, and only with Features::agentReplace on. Prices the new quote exactly as a

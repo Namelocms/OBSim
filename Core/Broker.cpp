@@ -69,6 +69,12 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 	std::vector<Holding> reserved;
 	double feeReserve = 0.0;
 
+	// A bid for no more than the account's uncovered short is a buy to cover. It reduces risk,
+	// so a broker accepts it whatever the buying power -- in a margin account any shortfall
+	// is simply a debit -- which is also what lets a margin call on a short be met at all.
+	const bool covering = (request.side == OrderAction::BID) && agent->shortShares > 0
+		&& request.volume <= Account::coverableShares(*agent);
+
 	if (request.side == OrderAction::BID) {
 		if (isLimit) {
 			// A limit bid escrows its whole cost up front, at its own price. A cent of slack
@@ -82,17 +88,27 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 				double worst = Account::feeSchedule(*agent).worstCaseBuyFees(request.volume, request.price);
 				feeReserve = std::ceil(worst / CASH_PRECISION - 1e-9) * CASH_PRECISION;
 			}
-			if (escrow + feeReserve > Account::buyingPower(*agent) + CASH_PRECISION) { return nullptr; }
+			if (!covering && escrow + feeReserve > Account::buyingPower(*agent) + CASH_PRECISION) { return nullptr; }
 			agent->updateCash(-escrow);
 			if (feeReserve > 0.0) { agent->updateCash(-feeReserve); }
 		}
 		// A market bid escrows nothing and pays leg by leg, bounded by buying power in the
 		// matching engine. See MatchingEngine::sweep for why that asymmetry is deliberate.
 	}
-	else {
+	else if (request.mark == SaleMark::LONG) {
 		// An ask reserves the shares it is selling, so they cannot be sold twice
 		if (request.volume > agent->getTotalHoldings()) { return nullptr; }
 		reserved = agent->removeHoldings(int(request.volume));
+	}
+	else {
+		// A short sale. Never both: an account holding shares sells them first. It needs margin
+		// for the new short, and either a locate or a market maker's exemption.
+		if (!Account::shortingEnabled(*agent) || agent->getTotalHoldings() > 0) { return nullptr; }
+		if (request.volume > Account::shortCapacity(*agent)) { return nullptr; }
+		if (request.mark == SaleMark::SHORT_EXEMPT) {
+			if (!Account::isExemptMarketMaker(*agent)) { return nullptr; }
+		}
+		else if (!this->OB.lending.locate(request.volume)) { return nullptr; }
 	}
 
 	std::shared_ptr<Order> order = std::make_shared<Order>(
@@ -109,6 +125,7 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 		request.sessions
 	);
 	order->feeReserve = feeReserve;
+	order->mark = (request.side == OrderAction::ASK) ? request.mark : SaleMark::LONG;
 
 	// Fill or kill decides before anything trades, so a kill leaves the book untouched
 	if (tif == TimeInForce::FOK && this->ME.fillableVolume(order) < order->volume) {
@@ -128,6 +145,7 @@ void Broker::killUnplaced(const std::shared_ptr<Order>& order, const std::shared
 	}
 	else {
 		for (Holding h : order->getReturnableShares()) { agent->upsertHolding(h); }
+		if (order->mark == SaleMark::SHORT) { this->OB.lending.releaseLocate(order->volume); }
 	}
 }
 void Broker::cancel(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent) {
@@ -168,6 +186,15 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 			return nullptr;
 		}
 	}
+	else if (order->isShortSale()) {
+		if (newVolume > oldVolume) {
+			unsigned int more = newVolume - oldVolume;
+			bool carried = more <= Account::shortCapacity(*agent)
+				&& (order->mark == SaleMark::SHORT_EXEMPT || this->OB.lending.locate(more));
+			if (!carried) { ++this->stats.replacesRefused; return nullptr; }
+		}
+		else if (order->mark == SaleMark::SHORT) { this->OB.lending.releaseLocate(oldVolume - newVolume); }
+	}
 	else if (newVolume > oldVolume && (newVolume - oldVolume) > agent->getTotalHoldings()) {
 		++this->stats.replacesRefused;
 		return nullptr;
@@ -182,7 +209,7 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 	// DECREASE: a same-price increase is new size joining the queue, and goes to the back.
 	if (!priceChanged && newVolume < oldVolume) {
 		if (isBid) { agent->updateCash(oldPrice * (oldVolume - newVolume)); }
-		else { for (const Holding& h : order->trimReserved(newVolume)) { agent->upsertHolding(h); } }
+		else if (!order->isShortSale()) { for (const Holding& h : order->trimReserved(newVolume)) { agent->upsertHolding(h); } }
 		order->volume = newVolume;
 		++this->stats.replacesInPlace;
 		return order;
@@ -200,6 +227,9 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 			if (newReserve > 0.0) { agent->updateCash(-newReserve); }
 			order->feeReserve = newReserve;
 		}
+	}
+	else if (order->isShortSale()) {
+		// No shares behind a short sale; its locate was adjusted above
 	}
 	else if (newVolume < oldVolume) {
 		for (const Holding& h : order->trimReserved(newVolume)) { agent->upsertHolding(h); }
@@ -229,16 +259,96 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 void Broker::reset() {
 	this->stats = BrokerStats();
 	this->triggers.clear();
+	this->buyIns.clear();
+}
+
+void Broker::buyBack(const std::shared_ptr<Agent>& agent, unsigned int shares, OrderOrigin origin) {
+	// Whatever it has bid already is cancelled, so the new order is the whole cover and the
+	// covering check sees all of the short as uncovered
+	std::vector<std::shared_ptr<Order>> bids;
+	for (const auto& kv : agent->activeBids) { bids.push_back(kv.second); }
+	for (const std::shared_ptr<Order>& order : bids) { this->OB.cancelOrder(order, agent); }
+
+	shares = std::min(shares, agent->shortShares);
+	if (shares == 0) { return; }
+
+	// A market order in the regular session; outside it an IOC limit up to
+	// LIQUIDATION_OUTSIDE_SLIP through the best offer
+	OrderRequest request{ OrderAction::BID, OrderType::MARKET };
+	request.volume = shares;
+	request.tif = TimeInForce::IOC;
+	request.origin = origin;
+	if (this->OB.session != Session::REGULAR) {
+		std::vector<std::shared_ptr<Order>> asks = this->OB.peekBestN(OrderAction::ASK, 1);
+		if (asks.empty() || asks[0] == nullptr) { return; }
+		request.type = OrderType::LIMIT;
+		double cap = asks[0]->price * (1.0 + LIQUIDATION_OUTSIDE_SLIP);
+		request.price = roundTo(cap, (cap < 1.00) ? 0.0001 : 0.01);
+	}
+	this->submit(request, agent);
+}
+
+void Broker::buyIn(const std::shared_ptr<Agent>& agent, unsigned int shares) {
+	++this->stats.buyInOrders;
+	this->buyBack(agent, shares, OrderOrigin::LIQUIDATION);
+}
+
+void Broker::recallLoans() {
+	if (!this->OB.features.shorting.enabled) { return; }
+	for (const auto& recall : this->OB.lending.recallsNeeded()) {
+		std::shared_ptr<Agent> agent = this->OB.getAgent(recall.first);
+		if (agent == nullptr) { continue; }
+		// The shares go back to the lender who sold them; the borrower still owes them, so the
+		// loan becomes a fail it has to buy back in now
+		this->OB.lending.returnLoan(*agent, recall.second);
+		agent->buyInDue = std::min<unsigned int>(agent->shortShares, agent->buyInDue + recall.second);
+		this->buyIns.insert(agent->id);
+		this->stats.recalledShares += recall.second;
+	}
+}
+
+void Broker::borrowForFails() {
+	if (!this->OB.features.shorting.enabled) { return; }
+	std::vector<std::shared_ptr<Agent>> failing;
+	for (const auto& kv : this->OB.agents) {
+		if (kv.second != nullptr && kv.second->shortShares > kv.second->borrowedShares) { failing.push_back(kv.second); }
+	}
+	std::sort(failing.begin(), failing.end(), [](const auto& a, const auto& b) { return a->id < b->id; });
+	for (const std::shared_ptr<Agent>& agent : failing) {
+		unsigned int fails = agent->shortShares - agent->borrowedShares;
+		this->stats.failsBorrowed += this->OB.lending.borrowUpTo(*agent, fails, this->OB.clock->simTimeMs);
+	}
+}
+
+void Broker::closeOutFails() {
+	if (!this->OB.features.shorting.enabled) { return; }
+	for (const auto& kv : this->OB.agents) {
+		const std::shared_ptr<Agent>& agent = kv.second;
+		if (agent == nullptr || agent->shortShares <= agent->borrowedShares) { continue; }
+		unsigned int fails = agent->shortShares - agent->borrowedShares;
+		agent->buyInDue = std::max(agent->buyInDue, fails);
+		this->buyIns.insert(agent->id);
+		this->stats.failsClosedOut += fails;
+	}
 }
 
 bool Broker::refreshMargin(const std::shared_ptr<Agent>& agent) {
 	if (agent == nullptr) { return false; }
-	double trigger = Account::liquidationPrice(*agent);
-	if (trigger > 0.0) { this->triggers.setMargin(agent->id, TriggerBook::Side::SELL, trigger); }
-	else { this->triggers.clearMargin(agent->id); }
+	if (agent->shortShares > 0) {
+		// A short is called as the price RISES through its trigger
+		double trigger = Account::shortLiquidationPrice(*agent);
+		if (trigger > 0.0) { this->triggers.setMargin(agent->id, TriggerBook::Side::BUY, trigger); }
+		else { this->triggers.clearMargin(agent->id); }
+	}
+	else {
+		double trigger = Account::liquidationPrice(*agent);
+		if (trigger > 0.0) { this->triggers.setMargin(agent->id, TriggerBook::Side::SELL, trigger); }
+		else { this->triggers.clearMargin(agent->id); }
+	}
+	if (agent->buyInDue > 0) { this->buyIns.insert(agent->id); }
 	return Account::inMaintenanceViolation(*agent, this->OB.currentPrice)
 		|| (Account::equity(*agent, this->OB.currentPrice) < 0.0 && agent->getTotalHoldings() == 0
-			&& agent->activeBids.empty() && agent->activeAsks.empty());
+			&& agent->shortShares == 0 && agent->activeBids.empty() && agent->activeAsks.empty());
 }
 
 void Broker::processTriggers() {
@@ -246,12 +356,13 @@ void Broker::processTriggers() {
 
 	// Nothing is being watched and nothing has changed: the common case with margin off,
 	// which must cost no more than this check
-	if (this->OB.dirtyAccounts.empty() && this->triggers.empty()) {
+	if (this->OB.dirtyAccounts.empty() && this->triggers.empty() && this->buyIns.empty()) {
 		this->OB.printRangeValid = false;
 		return;
 	}
 
 	int rounds = 0;
+	std::unordered_set<std::string> attemptedBuyIn;   // one attempt per account per pump
 	for (; rounds < MAX_TRIGGER_ROUNDS; ++rounds) {
 		std::vector<std::shared_ptr<Agent>> toLiquidate;
 		std::unordered_set<std::string> seen;
@@ -277,11 +388,34 @@ void Broker::processTriggers() {
 			}
 		}
 
-		if (toLiquidate.empty()) { break; }
+		// 3. Loans the lenders have sold out from under: recall them, newest first, and the
+		//    borrowers must buy back in (OrderModelPlan Step 1.3)
+		this->recallLoans();
 
-		// 3. Meet the calls. Their prints and fills feed the next round.
+		// 4. Buy-ins not yet attempted in this pump
+		std::vector<std::shared_ptr<Agent>> toBuyIn;
+		for (const std::string& id : this->buyIns) {
+			if (seen.count(id) || attemptedBuyIn.count(id)) { continue; }
+			std::shared_ptr<Agent> agent = this->OB.getAgent(id);
+			if (agent != nullptr && agent->buyInDue > 0) { toBuyIn.push_back(agent); }
+		}
+		std::sort(toBuyIn.begin(), toBuyIn.end(), [](const auto& a, const auto& b) { return a->id < b->id; });
+
+		if (toLiquidate.empty() && toBuyIn.empty()) { break; }
+
+		// 5. Meet the calls and the buy-ins. Their prints and fills feed the next round.
 		for (const std::shared_ptr<Agent>& agent : toLiquidate) { this->liquidate(agent); }
+		for (const std::shared_ptr<Agent>& agent : toBuyIn) {
+			attemptedBuyIn.insert(agent->id);
+			this->buyIn(agent, agent->buyInDue);
+		}
 		++this->stats.triggerRounds;
+	}
+
+	// Accounts whose buy-in is done leave the set
+	for (auto it = this->buyIns.begin(); it != this->buyIns.end();) {
+		std::shared_ptr<Agent> agent = this->OB.getAgent(*it);
+		if (agent == nullptr || agent->buyInDue == 0) { it = this->buyIns.erase(it); } else { ++it; }
 	}
 
 	if (rounds >= MAX_TRIGGER_ROUNDS) { ++this->stats.roundCapHits; }
@@ -300,6 +434,18 @@ void Broker::liquidate(const std::shared_ptr<Agent>& agent) {
 	for (const std::shared_ptr<Order>& order : working) { this->OB.cancelOrder(order, agent); }
 
 	double price = this->OB.currentPrice;
+
+	// A short is met by buying back enough to restore its opening requirement
+	if (agent->shortShares > 0) {
+		unsigned int cover = Account::shortCoverShares(*agent, price);
+		if (cover > 0) {
+			++this->stats.liquidationOrders;
+			this->buyBack(agent, cover, OrderOrigin::LIQUIDATION);
+		}
+		this->writeOffIfInsolvent(agent);
+		return;
+	}
+
 	unsigned int shares = Account::liquidationShares(*agent, price);
 	if (shares == 0) { this->writeOffIfInsolvent(agent); return; }
 
@@ -325,7 +471,7 @@ void Broker::liquidate(const std::shared_ptr<Agent>& agent) {
 
 void Broker::writeOffIfInsolvent(const std::shared_ptr<Agent>& agent) {
 	if (agent == nullptr) { return; }
-	if (agent->getTotalHoldings() > 0 || !agent->activeBids.empty() || !agent->activeAsks.empty()) { return; }
+	if (agent->getTotalHoldings() > 0 || agent->shortShares > 0 || !agent->activeBids.empty() || !agent->activeAsks.empty()) { return; }
 	if (agent->cash >= 0.0) { return; }
 
 	// Nothing left to sell and still owing: the broker eats it

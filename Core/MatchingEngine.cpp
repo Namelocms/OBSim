@@ -74,7 +74,12 @@ double MatchingEngine::sweep(const std::shared_ptr<Order>& order, const std::sha
 		// with limit bids, which pre-debit their whole cost -- a market bid reserving
 		// against currentPrice truncates a sweep that walks the book (see REFERENCE.md).
 		if (isBid && !isLimit) {
-			tradeVol = std::min(tradeVol, Account::affordableVolume(*agent, resting->price));
+			// ...except a buy to cover, which a broker accepts whatever the buying power: in a
+			// margin account any shortfall is just a debit. Without this a margin call on a
+			// short could never be met with a market order.
+			unsigned int cap = Account::affordableVolume(*agent, resting->price);
+			if (agent->shortShares > 0) { cap = std::max(cap, agent->shortShares); }
+			tradeVol = std::min(tradeVol, cap);
 		}
 		if (tradeVol < 1) { break; }
 
@@ -139,14 +144,16 @@ double MatchingEngine::settleLeg(const std::shared_ptr<Order>& incoming, const s
 			incomingAgent->updateCash(-cost);
 		}
 		restingAgent->updateCash(cost);
-		incomingAgent->upsertHolding(Holding(price, volume));
+		this->deliverShares(*incomingAgent, price, volume);
+		if (resting->isShortSale()) { this->openShort(*resting, *restingAgent, volume); }
 	}
 	else {
 		// The resting bid's cash was escrowed when it was placed; the incoming ask's
-		// shares were reserved when it was made. Only the seller's cash and the buyer's
-		// shares are left to move.
+		// shares were reserved when it was made -- or, for a short sale, are owed from now.
+		// Only the seller's cash and the buyer's shares are left to move.
 		incomingAgent->updateCash(cost);
-		restingAgent->upsertHolding(Holding(price, volume));
+		this->deliverShares(*restingAgent, price, volume);
+		if (incoming->isShortSale()) { this->openShort(*incoming, *incomingAgent, volume); }
 	}
 
 	this->OB.updateCurrentPrice(price);
@@ -172,6 +179,11 @@ double MatchingEngine::settleLeg(const std::shared_ptr<Order>& incoming, const s
 		this->OB.dirtyAccounts.push_back(incomingAgent->id);
 		this->OB.dirtyAccounts.push_back(restingAgent->id);
 	}
+	// And what each can lend has changed with what it holds
+	if (Account::shortingEnabled(*incomingAgent)) {
+		this->OB.lending.refreshLender(*incomingAgent);
+		this->OB.lending.refreshLender(*restingAgent);
+	}
 
 	return cost;
 }
@@ -190,6 +202,7 @@ void MatchingEngine::finishIncoming(const std::shared_ptr<Order>& order, const s
 		// Self trade protection (or an IOC/FOK remainder) killed this order before it could rest. Return the escrow
 		// and keep it out of the book, it must not be counted or left behind.
 		if (order->status == OrderStatus::CANCELED) {
+			if (order->mark == SaleMark::SHORT) { this->OB.lending.releaseLocate(order->volume); }
 			if (isBid) {
 				if (order->volume > 0) { agent->updateCash(order->price * order->volume); }
 				Account::releaseFeeReserve(*agent, *order);
@@ -219,6 +232,7 @@ void MatchingEngine::finishIncoming(const std::shared_ptr<Order>& order, const s
 		if (!isBid) {
 			std::vector<Holding> returnableShares = order->getReturnableShares();
 			for (Holding h : returnableShares) { agent->upsertHolding(h); }
+			if (order->mark == SaleMark::SHORT) { this->OB.lending.releaseLocate(order->volume); }
 		}
 	}
 	else {
@@ -277,4 +291,24 @@ void MatchingEngine::chargeFees(Order& order, Agent& agent, bool isMaker, double
 		charge = roundTo(charge - fromReserve);
 	}
 	if (charge != 0.0) { agent.updateCash(-charge); }
+}
+
+void MatchingEngine::deliverShares(Agent& buyer, double price, unsigned int volume) {
+	unsigned int cover = std::min(volume, buyer.shortShares);
+	if (cover > 0) {
+		// The unborrowed part of a short is the regulatory problem, so it is closed first
+		unsigned int fails = buyer.shortShares - buyer.borrowedShares;
+		unsigned int fromFails = std::min(cover, fails);
+		buyer.shortShares -= cover;
+		this->OB.lending.returnLoan(buyer, cover - fromFails);
+		buyer.buyInDue -= std::min(buyer.buyInDue, cover);
+	}
+	if (volume > cover) { buyer.upsertHolding(Holding(price, volume - cover)); }
+}
+
+void MatchingEngine::openShort(const Order& sale, Agent& seller, unsigned int volume) {
+	seller.shortShares += volume;
+	this->OB.lending.shortSoldBy[int(seller.type)][int(seller.subType)] += volume;
+	if (sale.mark == SaleMark::SHORT) { this->OB.lending.openLoan(seller, volume, this->OB.clock->simTimeMs); }
+	// SHORT_EXEMPT: owed but not borrowed, a fail until Broker::closeOutFails deals with it
 }

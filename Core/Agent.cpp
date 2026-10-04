@@ -197,6 +197,9 @@ void Agent::actFlatten() {
 		if (side == OrderAction::ASK) {
 			volume = previous->volume + this->getTotalHoldings();
 		}
+		else if (this->shortShares > 0) {
+			volume = previous->volume + Account::coverableShares(*this);
+		}
 		else {
 			// The previous attempt's escrow comes back to fund the new one
 			double available = Account::buyingPower(*this) + previous->price * previous->volume;
@@ -231,7 +234,9 @@ void Agent::actFlatten() {
 	this->broker.submit(request, shared_from_this());
 }
 double Agent::directionalBias() const {
-	if (!this->OB.features.adversityFromEntry) { return 1.0; }
+	// Shorting needs the position-derived bias whatever the adversity switch says: a stored +1
+	// would send a short agent to flatten by selling more
+	if (!this->OB.features.adversityFromEntry && !Account::shortingEnabled(*this)) { return 1.0; }
 	long long net = Account::netShares(*this);
 	return (net > 0) ? 1.0 : (net < 0) ? -1.0 : 0.0;
 }
@@ -357,13 +362,15 @@ OrderAction Agent::sentimentToAction() {
 OrderAction Agent::getRandomAction() {
 	bool hasCash = Account::buyingPower(*this) >= this->OB.currentPrice;
 	bool hasHolding = this->getTotalHoldings() > 0;
+	// A short agent can always bid, to cover; an agent that could short can always offer
+	bool isShort = this->shortShares > 0;
 	bool hasActiveOrder = !this->activeAsks.empty() || !this->activeBids.empty();
 	OrderAction action = OrderAction::HOLD;
 
 	// Check if agent is bankrupt. With margin on, owing more than it owns is bankrupt too,
 	// though the broker's write-off normally gets there first.
 	bool insolvent = this->OB.features.margin.enabled && Account::equity(*this, this->OB.currentPrice) <= 0.0;
-	if ((!hasCash && !hasHolding && !hasActiveOrder) || insolvent) {
+	if ((!hasCash && !hasHolding && !hasActiveOrder && !isShort) || insolvent) {
 		if (this->status != AgentStatus::BANKRUPT) { this->status = AgentStatus::BANKRUPT; }
 		return action;
 	}
@@ -373,8 +380,8 @@ OrderAction Agent::getRandomAction() {
 	action = this->sentimentToAction();
 
 	// Sanitize action choice
-	if (action == OrderAction::BID && !hasCash) { action = OrderAction::HOLD; }
-	if (action == OrderAction::ASK && !hasHolding) { action = OrderAction::HOLD; }
+	if (action == OrderAction::BID && !hasCash && !isShort) { action = OrderAction::HOLD; }
+	if (action == OrderAction::ASK && !hasHolding && !Account::canSellShort(*this)) { action = OrderAction::HOLD; }
 
 	// Check if agent should cancel an active order
 	if (action == OrderAction::HOLD && hasActiveOrder && randomInt(0, 3) == 0) {
@@ -400,6 +407,13 @@ OrderAction Agent::getRandomAction_DEPRECATED() {
 	return availableActions[actionChoice];
 }
 OrderRequest Agent::makeMarketBid() {
+	// A short agent's bid is a buy to cover, sized against what it owes rather than its cash
+	if (this->shortShares > 0) {
+		OrderRequest cover{ OrderAction::BID, OrderType::MARKET };
+		int owed = int(Account::coverableShares(*this));
+		if (owed >= 1) { cover.volume = (unsigned int)randomInt(1, owed); }
+		return cover;
+	}
 	int maxPurchasable = int(Account::affordableVolume(*this, this->OB.currentPrice));
 	if (maxPurchasable < 1) { return OrderRequest{ OrderAction::BID, OrderType::MARKET }; }
 
@@ -416,6 +430,16 @@ OrderRequest Agent::makeLimitBid(bool forceAggressive, bool fullSize) {
 	double chosenPrice = (forceAggressive || this->rollAggressive())
 		? this->getMarketablePrice(OrderAction::BID) : -1.0;
 	if (chosenPrice <= 0.0) { chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::BID); }
+
+	// A short agent's bid is a buy to cover, sized against what it owes rather than its cash
+	if (this->shortShares > 0) {
+		int owed = int(Account::coverableShares(*this));
+		if (owed < 1) { return request; }
+		request.price = chosenPrice;
+		request.volume = (unsigned int)(fullSize ? owed : randomInt(1, owed));
+		request.expiresAtMs = this->rollOrderExpiry(this->OB.clock->simTimeMs);
+		return request;
+	}
 
 	int maxPurchasable = int(Account::affordableVolume(*this, chosenPrice));
 
@@ -439,7 +463,7 @@ OrderRequest Agent::makeMarketAsk() {
 
 	int chosenVol = 1;
 	int totalHoldings = this->getTotalHoldings();
-	if (totalHoldings < 1) { return request; }
+	if (totalHoldings < 1) { return this->shortSaleSize(request, false); }
 	if (totalHoldings > 1) { chosenVol = randomInt(1, totalHoldings); }
 
 	request.volume = (unsigned int)chosenVol;
@@ -456,13 +480,29 @@ OrderRequest Agent::makeLimitAsk(bool forceAggressive, bool fullSize) {
 	int chosenVol = 1;
 
 	int totalHoldings = this->getTotalHoldings();
-	if (totalHoldings < 1) { return request; }
+	if (totalHoldings < 1) {
+		// Nothing to sell long. An agent that can short sells short instead.
+		request.price = chosenPrice;
+		request = this->shortSaleSize(request, fullSize);
+		if (!request.empty()) { request.expiresAtMs = this->rollOrderExpiry(this->OB.clock->simTimeMs); }
+		return request;
+	}
 	if (fullSize) { chosenVol = totalHoldings; }
 	else if (totalHoldings > 1) { chosenVol = randomInt(1, totalHoldings); }
 
 	request.price = chosenPrice;
 	request.volume = (unsigned int)chosenVol;
 	request.expiresAtMs = this->rollOrderExpiry(this->OB.clock->simTimeMs);
+	return request;
+}
+OrderRequest Agent::shortSaleSize(OrderRequest request, bool fullSize) {
+	if (!Account::canSellShort(*this)) { return request; }
+	unsigned int cap = Account::shortCapacity(*this);
+	const bool exempt = Account::isExemptMarketMaker(*this);
+	if (!exempt) { cap = (unsigned int)std::min<double>(double(cap), std::floor(this->OB.lending.available())); }
+	if (cap < 1) { return request; }
+	request.volume = fullSize ? cap : (unsigned int)randomInt(1, int(std::min<unsigned int>(cap, (unsigned int)INT_MAX)));
+	request.mark = exempt ? SaleMark::SHORT_EXEMPT : SaleMark::SHORT;
 	return request;
 }
 void Agent::requoteStale(OrderAction side) {

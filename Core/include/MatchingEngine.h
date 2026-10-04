@@ -55,6 +55,12 @@ private:
 	* fees off.
 	*/
 	void chargeFees(Order& order, Agent& agent, bool isMaker, double price, unsigned int volume);
+	/* Hand bought shares to the buyer: they cover its short first, fails before borrowed
+	*  shares, and only what is left becomes a holding (OrderModelPlan Step 1.4) */
+	void deliverShares(Agent& buyer, double price, unsigned int volume);
+	/* The seller of a short sale now owes the shares: a located short becomes a loan, an
+	*  exempt one a fail until it is borrowed or bought back */
+	void openShort(const Order& sale, Agent& seller, unsigned int volume);
 	/* Walk one side of the book for an incoming order, returning the total cost traded */
 	template <typename Queue>
 	double sweep(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent, Queue& opposite);

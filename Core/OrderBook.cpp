@@ -72,6 +72,8 @@ void OrderBook::cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent>
 		for (Holding h : returnableHoldings) {
 			agent->upsertHolding(h);
 		}
+		// A located short sale that will now never trade gives its locate back
+		if (order->mark == SaleMark::SHORT) { this->lending.releaseLocate(order->volume); }
 		agent->removeActiveOrder(order);
 		this->askQueue.erase(order);
 		this->numAsks--;

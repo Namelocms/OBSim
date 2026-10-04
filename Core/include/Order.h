@@ -30,6 +30,9 @@ public:
 	TimeInForce tif;
 	/* Sessions this order may trade in. Outside them it rests but is not matched. */
 	SessionMask sessions;
+	/* For an ask: long sale, located short, or exempt market maker short. Always LONG for a bid. */
+	SaleMark mark = SaleMark::LONG;
+	bool isShortSale() const { return this->side == OrderAction::ASK && this->mark != SaleMark::LONG; }
 
 	// ---- Fees (OrderModelPlan Step 1.1), all zero with fees off ----
 	//

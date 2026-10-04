@@ -15,6 +15,15 @@ enum class OrderType { MARKET, LIMIT };
 * FOK  -- fill or kill: fills completely on arrival or not at all, and touches nothing if not
 */
 enum class TimeInForce { DAY, GTC, GTD, IOC, FOK };
+/* How a sale is marked, as Reg SHO Rule 200(g) requires of every sell order
+*
+* LONG          the seller owns the shares, and they are reserved in the order
+* SHORT         the seller does not own them, and has located shares to borrow
+* SHORT_EXEMPT  a short sale by a market maker in bona fide market making, which Rule
+*               203(b)(2)(iii) exempts from the locate. It still has to be borrowed or
+*               bought back in time (Rule 204), see Broker::closeOutFails
+*/
+enum class SaleMark { LONG, SHORT, SHORT_EXEMPT };
 enum class ID_TYPE { ORDER, AGENT };
 enum class Session { PREMARKET, REGULAR, AFTERHOURS, OVERNIGHT, CLOSED };
 /* Which sessions an order may trade in, one bit per tradeable Session

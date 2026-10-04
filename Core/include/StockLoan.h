@@ -47,6 +47,10 @@ public:
 	/* Shares located for short sales that have not traded yet. Reserved, so two sellers
 	*  cannot both be promised the last shares in the pool. */
 	unsigned long long pending = 0;
+	/* Shares sold short over the run, by agent type and subtype. Measurement only: whether the
+	*  short-selling mix the plan expects actually ARISES from sentiment and constraints is a
+	*  thing to check, not to set. Indexed [AgentType][AgentSubType]. */
+	unsigned long long shortSoldBy[2][4] = {};
 
 	double supply() const { return this->institutionalSupply + this->retailSupply; }
 	/* Shares that could be located right now */

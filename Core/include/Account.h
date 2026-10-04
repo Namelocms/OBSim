@@ -47,6 +47,11 @@ inline constexpr double REG_T_INITIAL = 0.50;
 inline constexpr double FINRA_MAINTENANCE_LONG = 0.25;
 inline constexpr double MARGIN_MIN_EQUITY = 2'000.0;
 inline constexpr double MARGINABLE_MIN_PRICE = 5.00;
+/* FINRA 4210(c)(2): maintenance on a short, per share. Below $5: the greater of $2.50 or the
+*  price -- 250% of a $1 position. At or above $5: the greater of $5.00 or 30%. */
+inline constexpr double SHORT_LOW_PRICE_FLOOR = 2.50;
+inline constexpr double SHORT_HIGH_PRICE_FLOOR = 5.00;
+inline constexpr double SHORT_MAINTENANCE_PCT = 0.30;
 /* Share of the initial requirement a margin call liquidates back up to (D3) */
 inline constexpr double LIQUIDATION_TARGET = REG_T_INITIAL;
 /* How far through the best bid a liquidation outside the regular session will reach, where
@@ -115,6 +120,28 @@ double liquidationPrice(const Agent& agent);
 
 /* Margin loan outstanding: what the account has borrowed beyond its own cash and escrow */
 double debitBalance(const Agent& agent);
+
+// ---- Short selling (OrderModelPlan Step 1.4) ----
+
+/* FINRA maintenance on a short, per share, at this price */
+double shortMaintenancePerShare(double price);
+/* Equity a NEW short needs per share: Reg T's 50% beyond the proceeds, or maintenance if that
+*  is more -- which it is for any stock under $10 */
+double shortOpeningPerShare(double price);
+/* Shares this account has offered short and not yet sold */
+unsigned long long pendingShortShares(const Agent& agent);
+/* Shares this account could sell short right now on its margin, before any locate */
+unsigned int shortCapacity(const Agent& agent);
+/* Is this account a market maker, whose shorts are exempt from the locate? Institutional ALGO
+*  only: a retail algorithmic trader is not a registered market maker. */
+bool isExemptMarketMaker(const Agent& agent);
+/* Shares of this account's short not yet bid for: what a new covering bid may be for */
+unsigned int coverableShares(const Agent& agent);
+/* The price ABOVE which a short account falls into violation, or 0 if there is none */
+double shortLiquidationPrice(const Agent& agent);
+/* Shares a margin call on a short has to buy back, at this price, to restore the opening
+*  requirement */
+unsigned int shortCoverShares(const Agent& agent, double price);
 
 /* Shares a margin call has to sell, at the current price, to restore LIQUIDATION_TARGET */
 unsigned int liquidationShares(const Agent& agent, double price);

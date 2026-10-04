@@ -3,6 +3,7 @@
 #include "Enums.h" // TimeInForce and SessionMask, needed complete for OrderRequest's defaults
 #include "TriggerBook.h"
 #include <string>
+#include <set>
 
 class OrderBook;
 class MatchingEngine;
@@ -51,6 +52,9 @@ struct OrderRequest {
 	/* Sessions the order may trade in. All of them by default, which is how the book behaved
 	*  before orders carried a mask at all. */
 	SessionMask sessions = SESSIONS_ALL;
+	/* How an ask is marked. The broker checks it: a LONG sale must be covered by holdings, a
+	*  SHORT one by a locate, a SHORT_EXEMPT one by being a market maker. */
+	SaleMark mark = SaleMark::LONG;
 	OrderOrigin origin = OrderOrigin::AGENT;
 
 	/* An empty request is how a decision says "nothing to place" */
@@ -100,6 +104,14 @@ struct BrokerStats {
 	double borrowFeesCharged = 0.0;
 	double borrowFeesToLenders = 0.0;
 	long long borrowFeeDays = 0;
+
+	// ---- Short selling (OrderModelPlan Step 1.4) ----
+	/* Shares recalled because lenders sold them, buy-in orders sent, exempt fails borrowed at
+	*  the close, and fails still outstanding at the open that had to be bought in */
+	long long recalledShares = 0;
+	long long buyInOrders = 0;
+	long long failsBorrowed = 0;
+	long long failsClosedOut = 0;
 };
 
 /* Most rounds one pump of the trigger book may run before it stops and says so
@@ -126,6 +138,8 @@ public:
 	BrokerStats stats;
 	/* Every price the broker is watching on its customers' behalf */
 	TriggerBook triggers;
+	/* Accounts that owe a buy-in, ordered so the pump visits them deterministically */
+	std::set<std::string> buyIns;
 
 	Broker(OrderBook& ob, MatchingEngine& me);
 
@@ -178,12 +192,23 @@ public:
 	void accrueBorrowFees();
 	/* Clear the triggers and stats for a new run */
 	void reset();
+	/* At the regular close: borrow what can be borrowed against market makers' exempt shorts */
+	void borrowForFails();
+	/* At the regular open: any fail still outstanding must be bought in now (modelled on Reg SHO
+	*  Rule 204's close-out, by the beginning of regular trading hours) */
+	void closeOutFails();
 
 private:
 	/* Recompute one account's margin trigger, returning whether it is in violation right now */
 	bool refreshMargin(const std::shared_ptr<Agent>& agent);
 	/* Meet a margin call: cancel the account's orders, then sell enough to restore the target */
 	void liquidate(const std::shared_ptr<Agent>& agent);
+	/* Buy shares back to cover a short, cancelling its other bids first */
+	void buyBack(const std::shared_ptr<Agent>& agent, unsigned int shares, OrderOrigin origin);
+	/* Send the buy-in for a recalled loan or a fail that is due */
+	void buyIn(const std::shared_ptr<Agent>& agent, unsigned int shares);
+	/* Recall loans the pool can no longer cover, newest first */
+	void recallLoans();
 	/* Write off an account left with negative equity and nothing left to sell */
 	void writeOffIfInsolvent(const std::shared_ptr<Agent>& agent);
 	/* Everything submit does except the measurement around it */
