@@ -32,7 +32,9 @@ unsigned long long longShares(const Agent& agent) {
 	// ...and a held sell stop's shares, reserved so they cannot be sold twice
 	for (const auto& kv : agent.heldOrders) {
 		const std::shared_ptr<Order>& order = kv.second;
-		if (order != nullptr && order->side == OrderAction::ASK && !order->isShortSale()) { shares += order->volume; }
+		if (order != nullptr && order->side == OrderAction::ASK && !order->isShortSale() && !order->reservedByGroup) {
+			shares += order->volume;
+		}
 	}
 	return shares;
 }

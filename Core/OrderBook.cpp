@@ -60,6 +60,9 @@ void OrderBook::cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent>
 	if (order == nullptr) { return; }
 
 	order->status = OrderStatus::CANCELED;
+	if (!order->groupId.empty()) {
+		this->groupEvents.push_back({ GroupEvent::Type::CANCEL, order->groupId, order->id, order->volume });
+	}
 	if (order->side == OrderAction::BID) {
 		agent->updateCash(order->price * order->volume);
 		Account::releaseFeeReserve(*agent, *order);
@@ -219,6 +222,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->cashScale = 1.0;
 	this->lending.reset();
 	this->pendingPrints.clear();
+	this->groupEvents.clear();
 	this->dirtyAccounts.clear();
 	this->matchDepth = 0;
 	//this->orderHistory.clear();

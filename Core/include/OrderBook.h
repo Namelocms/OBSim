@@ -13,6 +13,7 @@
 #include "Ledger.h"
 #include "Features.h"
 #include "StockLoan.h"
+#include "OrderGroup.h"
 
 class Agent;
 class SimClock;
@@ -136,6 +137,8 @@ public:
 	std::vector<double> pendingPrints;
 	/* Accounts whose cash or position changed since the broker last looked, in change order */
 	std::vector<std::string> dirtyAccounts;
+	/* Fills and cancels of OCO and bracket members, for the broker to act on afterwards */
+	std::vector<GroupEvent> groupEvents;
 	/* How deep inside MatchingEngine::match the engine currently is. The broker refuses to
 	*  fire a trigger while this is non-zero -- that is the whole re-entrancy rule. */
 	int matchDepth = 0;

@@ -161,6 +161,10 @@ double MatchingEngine::settleLeg(const std::shared_ptr<Order>& incoming, const s
 	this->OB.fillOrder(resting, volume);
 	this->OB.recordTrade(price, volume, incoming->side);
 
+	// A fill on an OCO or bracket member is for the broker to act on once matching is done
+	if (!incoming->groupId.empty()) { this->OB.groupEvents.push_back({ GroupEvent::Type::FILL, incoming->groupId, incoming->id, volume }); }
+	if (!resting->groupId.empty()) { this->OB.groupEvents.push_back({ GroupEvent::Type::FILL, resting->groupId, resting->id, volume }); }
+
 	// Fees, once per side of every leg: the incoming order took liquidity, the resting one made it
 	this->chargeFees(*incoming, *incomingAgent, false, price, volume);
 	this->chargeFees(*resting, *restingAgent, true, price, volume);

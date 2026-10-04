@@ -48,6 +48,13 @@ public:
 	double trailExtreme = 0.0;
 	bool isTrailing() const { return this->trailAmount > 0.0 || this->trailPercent > 0.0; }
 
+	// ---- Contingent orders (OrderModelPlan Step 2.2) ----
+	/* The OCO or bracket this order belongs to, empty if none */
+	std::string groupId;
+	/* A held OCO leg that shares its sibling's reservation rather than holding shares itself */
+	bool reservedByGroup = false;
+
+
 	/* For an ask: long sale, located short, or exempt market maker short. Always LONG for a bid. */
 	SaleMark mark = SaleMark::LONG;
 	bool isShortSale() const { return this->side == OrderAction::ASK && this->mark != SaleMark::LONG; }

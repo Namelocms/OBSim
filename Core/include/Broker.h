@@ -2,6 +2,7 @@
 #include <memory>
 #include "Enums.h" // TimeInForce and SessionMask, needed complete for OrderRequest's defaults
 #include "TriggerBook.h"
+#include "OrderGroup.h"
 #include <string>
 #include <set>
 #include <map>
@@ -72,6 +73,14 @@ struct OrderRequest {
 	bool empty() const { return this->volume == 0; }
 };
 
+/* An entry order with a take-profit and a stop-loss to be attached as it fills */
+struct BracketRequest {
+	OrderRequest entry;
+	double takeProfit = 0.0;
+	double stopLoss = 0.0;
+	TimeInForce childTif = TimeInForce::GTC;
+};
+
 /* What the broker has been asked to do over a run
 *
 * Measurement only: nothing reads these to make a decision, so they cannot change what the
@@ -133,6 +142,14 @@ struct BrokerStats {
 	long long stopsCancelled = 0;
 	/* Trailing stop triggers moved by a new extreme */
 	long long trailMoves = 0;
+
+	// ---- Contingent orders (OrderModelPlan Step 2.2) ----
+	long long groupsCreated = 0;
+	long long groupsResolved = 0;
+	/* OCO stop legs shrunk because the limit leg part filled */
+	long long ocoReductions = 0;
+	/* Bracket children grown because the entry filled some more */
+	long long bracketGrowths = 0;
 };
 
 /* Most rounds one pump of the trigger book may run before it stops and says so
@@ -226,6 +243,15 @@ public:
 	unsigned int expireHeld(double nowMs);
 	/* May a stop trigger in the current session? */
 	bool stopsActive() const;
+
+	/* Place an OCO: a limit leg in the book and a stop leg held, same side, same size. The limit
+	*  leg reserves the shares (or cash); the stop leg shares the reservation. */
+	std::shared_ptr<OrderGroup> submitOco(const OrderRequest& limitLeg, const OrderRequest& stopLeg,
+		const std::shared_ptr<Agent>& agent);
+	/* Place a bracket: the entry now, its take-profit and stop-loss as it fills */
+	std::shared_ptr<OrderGroup> submitBracket(const BracketRequest& request, const std::shared_ptr<Agent>& agent);
+	/* The groups currently live, by id */
+	std::unordered_map<std::string, std::shared_ptr<OrderGroup>> groups;
 	/* At the regular close: borrow what can be borrowed against market makers' exempt shorts */
 	void borrowForFails();
 	/* At the regular open: any fail still outstanding must be bought in now (modelled on Reg SHO
@@ -245,8 +271,18 @@ private:
 	void recallLoans();
 	/* Write off an account left with negative equity and nothing left to sell */
 	void writeOffIfInsolvent(const std::shared_ptr<Agent>& agent);
+	/* Act on the fills and cancels of group members recorded during matching */
+	void processGroupEvents();
+	/* A bracket's entry filled some more: create or grow its OCO pair by that much */
+	void growBracket(OrderGroup& group, unsigned int volume);
+	/* The pair is settled: mark it, and cancel what is left of a bracket's entry */
+	void resolveGroup(OrderGroup& group);
+	/* The OCO's held stop triggered: cancel the book leg, take over its shares, then release */
+	void takeOverFromBookLeg(OrderGroup& group, const std::shared_ptr<Order>& heldLeg);
+	/* Hold a stop leg that shares an OCO sibling's reservation instead of reserving its own */
+	std::shared_ptr<Order> holdShared(OrderRequest request, const std::shared_ptr<Agent>& agent, const std::string& groupId);
 	/* Take a stop or trailing stop into the broker's keeping, reserving a sell stop's shares */
-	std::shared_ptr<Order> hold(const OrderRequest& request, const std::shared_ptr<Agent>& agent);
+	std::shared_ptr<Order> hold(const OrderRequest& request, const std::shared_ptr<Agent>& agent, bool reserveShares = true);
 	/* Cancel a held order, returning what it reserved */
 	void cancelHeld(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent);
 	/* A held order's trigger was reached: send it to the exchange as what its type says */
@@ -255,8 +291,10 @@ private:
 	void trailTo(double price);
 	/* Where a trailing stop's trigger stands for a given extreme */
 	static double trailingTrigger(const Order& order, double extreme);
+	/* place() with the order tagged as a group member before it can trade */
+	std::shared_ptr<Order> placeTagged(const OrderRequest& request, const std::shared_ptr<Agent>& agent, const std::string& groupId);
 	/* Everything submit does except the measurement around it */
-	std::shared_ptr<Order> place(const OrderRequest& request, const std::shared_ptr<Agent>& agent);
+	std::shared_ptr<Order> place(const OrderRequest& request, const std::shared_ptr<Agent>& agent, const std::string& groupId = "");
 	/* Kill an order that never reached the book, returning the escrow submit reserved for it.
 	*  Uses the same refund arithmetic as OrderBook::cancelOrder so the two paths agree. */
 	void killUnplaced(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent);
