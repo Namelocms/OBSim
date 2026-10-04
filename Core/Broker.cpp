@@ -27,7 +27,7 @@ std::shared_ptr<Order> Broker::submit(const OrderRequest& request, const std::sh
 		this->stats.spreadSum += (*this->OB.askQueue.begin())->price - (*this->OB.bidQueue.begin())->price;
 		++this->stats.spreadSamples;
 	}
-	std::shared_ptr<Order> order = this->place(request, agent);
+	std::shared_ptr<Order> order = request.isStop() ? this->hold(request, agent) : this->place(request, agent);
 	if (order == nullptr) { ++this->stats.refused; }
 	else { ++this->stats.submitted; }
 	return order;
@@ -150,6 +150,7 @@ void Broker::killUnplaced(const std::shared_ptr<Order>& order, const std::shared
 }
 void Broker::cancel(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent) {
 	if (order == nullptr || agent == nullptr) { return; }
+	if (order->held) { this->cancelHeld(order, agent); return; }
 	++this->stats.cancels;
 	this->stats.restedMsSum += this->OB.clock->simTimeMs - order->timestamp;
 	++this->stats.restedSamples;
@@ -260,6 +261,210 @@ void Broker::reset() {
 	this->stats = BrokerStats();
 	this->triggers.clear();
 	this->buyIns.clear();
+	this->stopTriggers.clear();
+	this->held.clear();
+	this->trailingSells.clear();
+	this->trailingBuys.clear();
+}
+
+// ---- Stops (OrderModelPlan Step 2.1) ----
+
+bool Broker::stopsActive() const {
+	return this->OB.features.stops.extendedHours || this->OB.session == Session::REGULAR;
+}
+
+double Broker::trailingTrigger(const Order& order, double extreme) {
+	bool sell = (order.side == OrderAction::ASK);
+	double trigger = (order.trailAmount > 0.0)
+		? (sell ? extreme - order.trailAmount : extreme + order.trailAmount)
+		: (sell ? extreme * (1.0 - order.trailPercent) : extreme * (1.0 + order.trailPercent));
+	double precision = (trigger < 1.00) ? 0.0001 : 0.01;
+	return roundTo(trigger, precision);
+}
+
+std::shared_ptr<Order> Broker::hold(const OrderRequest& request, const std::shared_ptr<Agent>& agent) {
+	if (request.side != OrderAction::BID && request.side != OrderAction::ASK) { return nullptr; }
+	const bool sell = (request.side == OrderAction::ASK);
+	const bool trailing = request.trailAmount > 0.0 || request.trailPercent > 0.0;
+	const double now = this->OB.clock->simTimeMs;
+	const double last = this->OB.currentPrice;
+
+	// A stop-limit needs its limit, and a stop lives until its time in force says otherwise:
+	// IOC and FOK mean nothing for an order that waits by design
+	if (request.type == OrderType::LIMIT && !(request.price > 0.0)) { return nullptr; }
+	if (request.tif == TimeInForce::IOC || request.tif == TimeInForce::FOK) { return nullptr; }
+	if ((request.sessions & SESSIONS_ALL) == 0) { return nullptr; }
+	if (trailing && request.trailPercent >= 1.0) { return nullptr; }
+
+	// A protective stop: sells come out of a long position, which they reserve, and must sit
+	// below the market; buys sit above it. A stop already through the market would simply be
+	// a market order, so it is refused rather than fired at once.
+	double trigger = request.stopPrice;
+	if (trailing) {
+		Order probe("", agent->id, 0.0, 1, now, request.side, request.type);
+		probe.trailAmount = request.trailAmount;
+		probe.trailPercent = request.trailPercent;
+		trigger = trailingTrigger(probe, last);
+	}
+	if (!(trigger > 0.0)) { return nullptr; }
+	if (sell ? !(trigger < last) : !(trigger > last)) { return nullptr; }
+
+	std::vector<Holding> reserved;
+	if (sell) {
+		if (request.mark != SaleMark::LONG) { return nullptr; }
+		if (request.volume > agent->getTotalHoldings()) { return nullptr; }
+		reserved = agent->removeHoldings(int(request.volume));
+	}
+
+	double expiresAtMs = 0.0;
+	switch (request.tif) {
+	case TimeInForce::DAY: expiresAtMs = MarketCalendar::dayOrderExpiryMs(now, request.sessions); break;
+	case TimeInForce::GTC:
+		expiresAtMs = MarketCalendar::dayOrderExpiryMs(
+			now + MarketCalendar::minutesToMs(GTC_MAX_DAYS * MarketCalendar::TOTAL_MINUTES_PER_DAY), request.sessions);
+		break;
+	default:
+		if (!(request.expiresAtMs > now)) {
+			for (Holding h : reserved) { agent->upsertHolding(h); }
+			return nullptr;
+		}
+		expiresAtMs = request.expiresAtMs;
+		break;
+	}
+
+	std::shared_ptr<Order> order = std::make_shared<Order>(
+		this->OB.makeId(ID_TYPE::ORDER), agent->id,
+		(request.type == OrderType::LIMIT) ? request.price : -1.0,
+		request.volume, now, request.side, request.type, reserved, expiresAtMs, request.tif, request.sessions);
+	order->held = true;
+	order->stopPrice = trigger;
+	order->trailAmount = request.trailAmount;
+	order->trailPercent = request.trailPercent;
+	order->trailExtreme = last;
+
+	agent->heldOrders[order->id] = order;
+	this->held[order->id] = order;
+	this->stopTriggers.setOrder(order->id, agent->id, sell ? TriggerBook::Side::SELL : TriggerBook::Side::BUY, trigger);
+	if (trailing) {
+		if (sell) { this->trailingSells.emplace(last, order->id); }
+		else { this->trailingBuys.emplace(last, order->id); }
+	}
+	++this->stats.stopsPlaced;
+	return order;
+}
+
+static void eraseTrailing(std::multimap<double, std::string>& sells,
+	std::multimap<double, std::string, std::greater<double>>& buys, const Order& order) {
+	if (!order.isTrailing()) { return; }
+	if (order.side == OrderAction::ASK) {
+		auto range = sells.equal_range(order.trailExtreme);
+		for (auto it = range.first; it != range.second; ++it) { if (it->second == order.id) { sells.erase(it); return; } }
+	}
+	else {
+		auto range = buys.equal_range(order.trailExtreme);
+		for (auto it = range.first; it != range.second; ++it) { if (it->second == order.id) { buys.erase(it); return; } }
+	}
+}
+
+void Broker::cancelHeld(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent) {
+	if (order == nullptr || !order->held) { return; }
+	this->stopTriggers.clearOrder(order->id);
+	eraseTrailing(this->trailingSells, this->trailingBuys, *order);
+	this->held.erase(order->id);
+	order->held = false;
+	order->status = OrderStatus::CANCELED;
+	if (agent != nullptr) {
+		for (Holding h : order->getReturnableShares()) { agent->upsertHolding(h); }
+		agent->heldOrders.erase(order->id);
+	}
+	++this->stats.stopsCancelled;
+}
+
+void Broker::trailTo(double price) {
+	// Sells trail the high: every one whose high is below this print has a new high
+	while (!this->trailingSells.empty() && this->trailingSells.begin()->first < price) {
+		std::string id = this->trailingSells.begin()->second;
+		this->trailingSells.erase(this->trailingSells.begin());
+		auto found = this->held.find(id);
+		if (found == this->held.end()) { continue; }
+		Order& order = *found->second;
+		order.trailExtreme = price;
+		order.stopPrice = trailingTrigger(order, price);
+		this->stopTriggers.setOrder(order.id, order.agentId, TriggerBook::Side::SELL, order.stopPrice);
+		this->trailingSells.emplace(price, id);
+		++this->stats.trailMoves;
+	}
+	// Buys trail the low
+	while (!this->trailingBuys.empty() && this->trailingBuys.begin()->first > price) {
+		std::string id = this->trailingBuys.begin()->second;
+		this->trailingBuys.erase(this->trailingBuys.begin());
+		auto found = this->held.find(id);
+		if (found == this->held.end()) { continue; }
+		Order& order = *found->second;
+		order.trailExtreme = price;
+		order.stopPrice = trailingTrigger(order, price);
+		this->stopTriggers.setOrder(order.id, order.agentId, TriggerBook::Side::BUY, order.stopPrice);
+		this->trailingBuys.emplace(price, id);
+		++this->stats.trailMoves;
+	}
+}
+
+void Broker::release(const std::shared_ptr<Order>& order) {
+	if (order == nullptr || !order->held) { return; }
+	std::shared_ptr<Agent> agent = this->OB.getAgent(order->agentId);
+	eraseTrailing(this->trailingSells, this->trailingBuys, *order);
+	this->held.erase(order->id);
+	order->held = false;
+	if (agent == nullptr) { order->status = OrderStatus::CANCELED; return; }
+	agent->heldOrders.erase(order->id);
+	++this->stats.stopsTriggered;
+
+	// It enters the book now, as a new order would, behind everything already there
+	order->timestamp = this->OB.clock->simTimeMs;
+
+	// A sell stop's shares were reserved when it was placed. A buy stop reserved nothing, as
+	// at a real broker, so it is paid for now -- unless it covers a short, which a broker
+	// accepts whatever the buying power.
+	if (order->side == OrderAction::BID) {
+		const bool covering = agent->shortShares > 0 && order->volume <= Account::coverableShares(*agent);
+		if (order->type == OrderType::LIMIT) {
+			double escrow = roundTo(order->price * order->volume);
+			double reserve = 0.0;
+			if (Account::feesEnabled(*agent)) {
+				double worst = Account::feeSchedule(*agent).worstCaseBuyFees(order->volume, order->price);
+				reserve = std::ceil(worst / CASH_PRECISION - 1e-9) * CASH_PRECISION;
+			}
+			if (!covering && escrow + reserve > Account::buyingPower(*agent) + CASH_PRECISION) {
+				order->status = OrderStatus::CANCELED;
+				++this->stats.stopsRefusedAtTrigger;
+				return;
+			}
+			agent->updateCash(-escrow);
+			if (reserve > 0.0) { agent->updateCash(-reserve); }
+			order->feeReserve = reserve;
+		}
+		else if (!covering && Account::affordableVolume(*agent, this->OB.currentPrice) < 1) {
+			order->status = OrderStatus::CANCELED;
+			++this->stats.stopsRefusedAtTrigger;
+			return;
+		}
+	}
+
+	this->ME.match(order);
+}
+
+unsigned int Broker::expireHeld(double nowMs) {
+	std::vector<std::shared_ptr<Order>> due;
+	for (const auto& kv : this->held) {
+		if (kv.second->expiresAtMs > 0.0 && kv.second->expiresAtMs <= nowMs) { due.push_back(kv.second); }
+	}
+	std::sort(due.begin(), due.end(), [](const auto& a, const auto& b) { return a->id < b->id; });
+	for (const std::shared_ptr<Order>& order : due) {
+		this->cancelHeld(order, this->OB.getAgent(order->agentId));
+		--this->stats.stopsCancelled;
+		++this->stats.stopsExpired;
+	}
+	return (unsigned int)due.size();
 }
 
 void Broker::buyBack(const std::shared_ptr<Agent>& agent, unsigned int shares, OrderOrigin origin) {
@@ -354,10 +559,11 @@ bool Broker::refreshMargin(const std::shared_ptr<Agent>& agent) {
 void Broker::processTriggers() {
 	if (this->OB.matchDepth > 0) { ++this->stats.reentrancyBlocked; return; }
 
-	// Nothing is being watched and nothing has changed: the common case with margin off,
-	// which must cost no more than this check
-	if (this->OB.dirtyAccounts.empty() && this->triggers.empty() && this->buyIns.empty()) {
-		this->OB.printRangeValid = false;
+	// Nothing is being watched and nothing has changed: the common case with every mechanism
+	// off, which must cost no more than this check
+	if (this->OB.dirtyAccounts.empty() && this->triggers.empty() && this->buyIns.empty()
+		&& this->stopTriggers.empty()) {
+		this->OB.pendingPrints.clear();
 		return;
 	}
 
@@ -365,6 +571,7 @@ void Broker::processTriggers() {
 	std::unordered_set<std::string> attemptedBuyIn;   // one attempt per account per pump
 	for (; rounds < MAX_TRIGGER_ROUNDS; ++rounds) {
 		std::vector<std::shared_ptr<Agent>> toLiquidate;
+		std::vector<std::shared_ptr<Order>> toRelease;
 		std::unordered_set<std::string> seen;
 
 		// 1. Accounts that changed: move their trigger, and catch any already in violation
@@ -376,11 +583,20 @@ void Broker::processTriggers() {
 			if (this->refreshMargin(agent)) { toLiquidate.push_back(agent); }
 		}
 
-		// 2. Whatever the prints since the last look crossed, in firing order
-		if (this->OB.printRangeValid) {
-			double low = this->OB.printLow, high = this->OB.printHigh;
-			this->OB.printRangeValid = false;
-			for (const TriggerEntry& entry : this->triggers.collect(low, high)) {
+		// 2. The prints since the last look, one at a time in the order they printed: each moves
+		//    the trailing stops it sets a new extreme for, then fires whatever it reached
+		std::vector<double> prints;
+		prints.swap(this->OB.pendingPrints);
+		const bool stopsLive = this->stopsActive();
+		for (double p : prints) {
+			if (stopsLive) {
+				this->trailTo(p);
+				for (const TriggerEntry& entry : this->stopTriggers.collect(p, p)) {
+					auto found = this->held.find(entry.orderId);
+					if (found != this->held.end()) { toRelease.push_back(found->second); }
+				}
+			}
+			for (const TriggerEntry& entry : this->triggers.collect(p, p)) {
 				if (entry.kind != TriggerKind::MARGIN) { continue; }
 				if (!seen.insert(entry.agentId).second) { continue; }
 				std::shared_ptr<Agent> agent = this->OB.getAgent(entry.agentId);
@@ -401,10 +617,13 @@ void Broker::processTriggers() {
 		}
 		std::sort(toBuyIn.begin(), toBuyIn.end(), [](const auto& a, const auto& b) { return a->id < b->id; });
 
-		if (toLiquidate.empty() && toBuyIn.empty()) { break; }
+		if (toLiquidate.empty() && toBuyIn.empty() && toRelease.empty()) { break; }
 
-		// 5. Meet the calls and the buy-ins. Their prints and fills feed the next round.
+		// 5. Act. Margin calls first -- the broker protecting its loans -- then the stops in the
+		//    order their prints reached them, then buy-ins. Every print and fill feeds the
+		//    next round, which is how a cascade happens.
 		for (const std::shared_ptr<Agent>& agent : toLiquidate) { this->liquidate(agent); }
+		for (const std::shared_ptr<Order>& order : toRelease) { this->release(order); }
 		for (const std::shared_ptr<Agent>& agent : toBuyIn) {
 			attemptedBuyIn.insert(agent->id);
 			this->buyIn(agent, agent->buyInDue);
@@ -432,6 +651,10 @@ void Broker::liquidate(const std::shared_ptr<Agent>& agent) {
 	for (const auto& kv : agent->activeBids) { working.push_back(kv.second); }
 	for (const auto& kv : agent->activeAsks) { working.push_back(kv.second); }
 	for (const std::shared_ptr<Order>& order : working) { this->OB.cancelOrder(order, agent); }
+	// A held stop's reserved shares are needed for the liquidation itself
+	std::vector<std::shared_ptr<Order>> stops;
+	for (const auto& kv : agent->heldOrders) { stops.push_back(kv.second); }
+	for (const std::shared_ptr<Order>& order : stops) { this->cancelHeld(order, agent); }
 
 	double price = this->OB.currentPrice;
 
@@ -471,7 +694,8 @@ void Broker::liquidate(const std::shared_ptr<Agent>& agent) {
 
 void Broker::writeOffIfInsolvent(const std::shared_ptr<Agent>& agent) {
 	if (agent == nullptr) { return; }
-	if (agent->getTotalHoldings() > 0 || agent->shortShares > 0 || !agent->activeBids.empty() || !agent->activeAsks.empty()) { return; }
+	if (agent->getTotalHoldings() > 0 || agent->shortShares > 0 || !agent->activeBids.empty() || !agent->activeAsks.empty()
+		|| !agent->heldOrders.empty()) { return; }
 	if (agent->cash >= 0.0) { return; }
 
 	// Nothing left to sell and still owing: the broker eats it

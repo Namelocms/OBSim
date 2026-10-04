@@ -127,8 +127,7 @@ void OrderBook::recordTrade(double price, unsigned int volume, OrderAction aggre
 	this->tickHistory.push_back(TradePrint(price, volume, this->clock->simTimeMs, aggressor));
 
 	// Recorded for the broker to act on afterwards, never acted on here
-	if (!this->printRangeValid) { this->printLow = price; this->printHigh = price; this->printRangeValid = true; }
-	else { this->printLow = (std::min)(this->printLow, price); this->printHigh = (std::max)(this->printHigh, price); }
+	this->pendingPrints.push_back(price);
 
 	// Trim from the front so the retained window stays bounded. A while rather than a
 	// single pop so that lowering the cap mid-run takes effect at once, instead of
@@ -219,7 +218,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->ledger.reset();
 	this->cashScale = 1.0;
 	this->lending.reset();
-	this->printRangeValid = false;
+	this->pendingPrints.clear();
 	this->dirtyAccounts.clear();
 	this->matchDepth = 0;
 	//this->orderHistory.clear();

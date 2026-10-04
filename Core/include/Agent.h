@@ -518,6 +518,8 @@ public:
 	std::unordered_map<std::string, std::shared_ptr<Order>> activeAsks;
 	/* All open bid orders placed by the agent */
 	std::unordered_map<std::string, std::shared_ptr<Order>> activeBids;
+	/* Stops and other orders the broker is holding for this agent, not yet in the book */
+	std::unordered_map<std::string, std::shared_ptr<Order>> heldOrders;
 	/* The orderbook for the current stock */
 	OrderBook& OB;
 	/* The broker every order and cancel goes through. Agents never reach the matching

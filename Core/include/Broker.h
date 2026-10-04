@@ -4,6 +4,9 @@
 #include "TriggerBook.h"
 #include <string>
 #include <set>
+#include <map>
+#include <unordered_map>
+#include <functional>
 
 class OrderBook;
 class MatchingEngine;
@@ -55,6 +58,14 @@ struct OrderRequest {
 	/* How an ask is marked. The broker checks it: a LONG sale must be covered by holdings, a
 	*  SHORT one by a locate, a SHORT_EXEMPT one by being a market maker. */
 	SaleMark mark = SaleMark::LONG;
+	/* A stop (OrderModelPlan Step 2.1): held by the broker until a print reaches stopPrice,
+	*  then sent as this request's type -- a stop-market, or a stop-limit at price. */
+	double stopPrice = 0.0;
+	/* A trailing stop instead: the trigger follows the best price since placement at this
+	*  distance, as an amount or a fraction. stopPrice is then worked out, not given. */
+	double trailAmount = 0.0;
+	double trailPercent = 0.0;
+	bool isStop() const { return this->stopPrice > 0.0 || this->trailAmount > 0.0 || this->trailPercent > 0.0; }
 	OrderOrigin origin = OrderOrigin::AGENT;
 
 	/* An empty request is how a decision says "nothing to place" */
@@ -112,6 +123,16 @@ struct BrokerStats {
 	long long buyInOrders = 0;
 	long long failsBorrowed = 0;
 	long long failsClosedOut = 0;
+
+	// ---- Stops (OrderModelPlan Step 2.1) ----
+	long long stopsPlaced = 0;
+	long long stopsTriggered = 0;
+	/* Triggered buy stops the account could no longer pay for, cancelled rather than placed */
+	long long stopsRefusedAtTrigger = 0;
+	long long stopsExpired = 0;
+	long long stopsCancelled = 0;
+	/* Trailing stop triggers moved by a new extreme */
+	long long trailMoves = 0;
 };
 
 /* Most rounds one pump of the trigger book may run before it stops and says so
@@ -140,6 +161,15 @@ public:
 	TriggerBook triggers;
 	/* Accounts that owe a buy-in, ordered so the pump visits them deterministically */
 	std::set<std::string> buyIns;
+	/* Margin calls are watched here, stops in their own book: whether a stop may fire depends
+	*  on the session (Features::stops), a margin call's never does */
+	TriggerBook stopTriggers;
+	/* Every held order, by id */
+	std::unordered_map<std::string, std::shared_ptr<Order>> held;
+	/* Trailing stops by the extreme they have seen, so a print only touches the ones it moves:
+	*  sells by their high, lowest first; buys by their low, highest first */
+	std::multimap<double, std::string> trailingSells;
+	std::multimap<double, std::string, std::greater<double>> trailingBuys;
 
 	Broker(OrderBook& ob, MatchingEngine& me);
 
@@ -192,6 +222,10 @@ public:
 	void accrueBorrowFees();
 	/* Clear the triggers and stats for a new run */
 	void reset();
+	/* Cancel every held order whose time-in-force has run out, returning reserved shares */
+	unsigned int expireHeld(double nowMs);
+	/* May a stop trigger in the current session? */
+	bool stopsActive() const;
 	/* At the regular close: borrow what can be borrowed against market makers' exempt shorts */
 	void borrowForFails();
 	/* At the regular open: any fail still outstanding must be bought in now (modelled on Reg SHO
@@ -211,6 +245,16 @@ private:
 	void recallLoans();
 	/* Write off an account left with negative equity and nothing left to sell */
 	void writeOffIfInsolvent(const std::shared_ptr<Agent>& agent);
+	/* Take a stop or trailing stop into the broker's keeping, reserving a sell stop's shares */
+	std::shared_ptr<Order> hold(const OrderRequest& request, const std::shared_ptr<Agent>& agent);
+	/* Cancel a held order, returning what it reserved */
+	void cancelHeld(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent);
+	/* A held order's trigger was reached: send it to the exchange as what its type says */
+	void release(const std::shared_ptr<Order>& order);
+	/* Move the trailing stops a print has set a new extreme for */
+	void trailTo(double price);
+	/* Where a trailing stop's trigger stands for a given extreme */
+	static double trailingTrigger(const Order& order, double extreme);
 	/* Everything submit does except the measurement around it */
 	std::shared_ptr<Order> place(const OrderRequest& request, const std::shared_ptr<Agent>& agent);
 	/* Kill an order that never reached the book, returning the escrow submit reserved for it.

@@ -129,11 +129,11 @@ public:
 
 	// ---- Trigger pump inputs (OrderModelPlan Step 1.2) ----
 
-	/* Lowest and highest price printed since the broker last looked. recordTrade widens it and
-	*  never acts on it: triggers fire only after matching has returned. */
-	bool printRangeValid = false;
-	double printLow = 0.0;
-	double printHigh = 0.0;
+	/* Every price printed since the broker last looked, in the order printed. recordTrade
+	*  appends and never acts on it: triggers fire only after matching has returned. In order,
+	*  not as a range, because a trailing stop's trigger moves with the prints: a sweep that
+	*  rose and set a new high must not have its earlier, lower prints fire the raised stop. */
+	std::vector<double> pendingPrints;
 	/* Accounts whose cash or position changed since the broker last looked, in change order */
 	std::vector<std::string> dirtyAccounts;
 	/* How deep inside MatchingEngine::match the engine currently is. The broker refuses to

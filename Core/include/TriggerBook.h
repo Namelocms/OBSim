@@ -52,6 +52,12 @@ public:
 	/* Is this account's margin trigger in the book, and where */
 	bool marginPrice(const std::string& agentId, double& price) const;
 
+	/* Set, move or clear a held order's trigger (a stop, a trailing stop). Inclusive: a stop
+	*  fires on a print AT its price as well as through it. */
+	void setOrder(const std::string& orderId, const std::string& agentId, Side side, double price);
+	void clearOrder(const std::string& orderId);
+	bool orderPrice(const std::string& orderId, double& price) const;
+
 	/* Remove and return every trigger the prints in [low, high] crossed, in firing order:
 	*  sell triggers highest first, then buy triggers lowest first */
 	std::vector<TriggerEntry> collect(double low, double high);
@@ -69,6 +75,8 @@ private:
 	/* Where each account's margin trigger sits, so moving one is O(log n) */
 	struct MarginSlot { Side side; SellMap::iterator sell; BuyMap::iterator buy; };
 	std::unordered_map<std::string, MarginSlot> margin;
+	/* Where each held order's trigger sits */
+	std::unordered_map<std::string, MarginSlot> orders;
 
 	unsigned long long nextSeq = 1;
 };

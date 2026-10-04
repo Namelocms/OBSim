@@ -715,7 +715,7 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 		if (endingSession == Session::REGULAR) { this->broker.borrowForFails(); }
 
 		if (MarketCalendar::expiresAtSessionEnd(endingSession)) {
-			unsigned int expiredCount = this->OB.expireOrders(boundaryMs);
+			unsigned int expiredCount = this->OB.expireOrders(boundaryMs) + this->broker.expireHeld(boundaryMs);
 			if (expiredCount > 0 && this->onLog) {
 				this->onLog({ LogEntry::Kind::CANCEL, boundaryMs, "EXPIRED " + std::to_string(expiredCount) + " orders" });
 			}
@@ -988,6 +988,13 @@ void CoreSim::beginTransientDeparture(std::shared_ptr<Agent> agent, double simTi
 	// A flat agent has nothing to close, so every order it has resting could only open a new
 	// position -- on either side, once agents can short. With the position-derived bias a
 	// flat agent's bias is 0, which entrySide reads as long, so the other side is added here.
+	// Held stops go too: a protective stop on an agent that is leaving would keep shares
+	// reserved that its unwind needs to sell
+	{
+		std::vector<std::shared_ptr<Order>> stops;
+		for (const auto& kv : agent->heldOrders) { stops.push_back(kv.second); }
+		for (const std::shared_ptr<Order>& order : stops) { this->broker.cancel(order, agent); }
+	}
 	if (agent->directionalBias() == 0.0) {
 		const auto& other = (entry == OrderAction::BID) ? agent->activeAsks : agent->activeBids;
 		for (const auto& kv : other) { toCancel.push_back(kv.second); }
@@ -1039,7 +1046,8 @@ bool CoreSim::rollTransientPersonality(std::shared_ptr<Agent> agent, double simT
 	// either way it would hide the real bug, which is a slot pooled before it was flat.
 	if (!agent->holdings.empty() || !agent->activeBids.empty() || !agent->activeAsks.empty()
 		|| this->OB.agentHasRestingOrders(agent->id)
-		|| agent->shortShares > 0 || agent->borrowedShares > 0 || agent->buyInDue > 0) {
+		|| agent->shortShares > 0 || agent->borrowedShares > 0 || agent->buyInDue > 0
+		|| !agent->heldOrders.empty()) {
 		if (this->onLog) {
 			this->onLog({ LogEntry::Kind::HOLD, simTimeMs,
 				"REFUSED to reroll unclean transient slot " + agent->id });

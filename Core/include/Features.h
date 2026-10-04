@@ -44,4 +44,13 @@ struct Features {
 	struct Shorting {
 		bool enabled = false;
 	} shorting;
+
+	/* OrderModelPlan Step 2.1: stop orders. The mechanism is always there -- it does nothing
+	*  until someone places a stop -- but whether a stop may trigger outside the regular session
+	*  is a broker policy. Most retail brokers only trigger stops in the regular session, so
+	*  that is the default (decision D5); a print off hours is ignored, and a stop the price
+	*  gapped through overnight fires on the first regular-session print. */
+	struct Stops {
+		bool extendedHours = false;
+	} stops;
 };

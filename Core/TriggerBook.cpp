@@ -27,6 +27,31 @@ bool TriggerBook::marginPrice(const std::string& agentId, double& price) const {
 	return true;
 }
 
+void TriggerBook::setOrder(const std::string& orderId, const std::string& agentId, Side side, double price) {
+	this->clearOrder(orderId);
+	if (!(price > 0.0)) { return; }
+	TriggerEntry entry{ TriggerKind::STOP, agentId, orderId, true, this->nextSeq++ };
+	MarginSlot slot{ side, this->sells.end(), this->buys.end() };
+	if (side == Side::SELL) { slot.sell = this->sells.emplace(price, entry); }
+	else { slot.buy = this->buys.emplace(price, entry); }
+	this->orders[orderId] = slot;
+}
+
+void TriggerBook::clearOrder(const std::string& orderId) {
+	auto found = this->orders.find(orderId);
+	if (found == this->orders.end()) { return; }
+	if (found->second.side == Side::SELL) { this->sells.erase(found->second.sell); }
+	else { this->buys.erase(found->second.buy); }
+	this->orders.erase(found);
+}
+
+bool TriggerBook::orderPrice(const std::string& orderId, double& price) const {
+	auto found = this->orders.find(orderId);
+	if (found == this->orders.end()) { return false; }
+	price = (found->second.side == Side::SELL) ? found->second.sell->first : found->second.buy->first;
+	return true;
+}
+
 std::vector<TriggerEntry> TriggerBook::collect(double low, double high) {
 	std::vector<TriggerEntry> fired;
 
@@ -37,6 +62,7 @@ std::vector<TriggerEntry> TriggerBook::collect(double low, double high) {
 		if (!crossed) { ++it; continue; }
 		fired.push_back(it->second);
 		if (it->second.kind == TriggerKind::MARGIN) { this->margin.erase(it->second.agentId); }
+		else { this->orders.erase(it->second.orderId); }
 		it = this->sells.erase(it);
 	}
 
@@ -46,6 +72,7 @@ std::vector<TriggerEntry> TriggerBook::collect(double low, double high) {
 		if (!crossed) { ++it; continue; }
 		fired.push_back(it->second);
 		if (it->second.kind == TriggerKind::MARGIN) { this->margin.erase(it->second.agentId); }
+		else { this->orders.erase(it->second.orderId); }
 		it = this->buys.erase(it);
 	}
 
@@ -56,5 +83,6 @@ void TriggerBook::clear() {
 	this->sells.clear();
 	this->buys.clear();
 	this->margin.clear();
+	this->orders.clear();
 	this->nextSeq = 1;
 }

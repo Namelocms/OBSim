@@ -30,6 +30,24 @@ public:
 	TimeInForce tif;
 	/* Sessions this order may trade in. Outside them it rests but is not matched. */
 	SessionMask sessions;
+	// ---- Held orders (OrderModelPlan Step 2.1) ----
+	//
+	// A stop is held by the broker, out of the book, until a print reaches it. It is the same
+	// Order throughout -- same id -- and on triggering it enters the book as the market or
+	// limit order its type says.
+
+	/* True while the broker is holding this order for a trigger */
+	bool held = false;
+	/* The trigger price. For a trailing stop, where it currently stands. */
+	double stopPrice = 0.0;
+	/* A trailing stop's distance from the best price since it was placed, as an amount or as
+	*  a fraction of that price. Zero for a fixed stop. */
+	double trailAmount = 0.0;
+	double trailPercent = 0.0;
+	/* The best price a trailing stop has seen: the high for a sell, the low for a buy */
+	double trailExtreme = 0.0;
+	bool isTrailing() const { return this->trailAmount > 0.0 || this->trailPercent > 0.0; }
+
 	/* For an ask: long sale, located short, or exempt market maker short. Always LONG for a bid. */
 	SaleMark mark = SaleMark::LONG;
 	bool isShortSale() const { return this->side == OrderAction::ASK && this->mark != SaleMark::LONG; }
