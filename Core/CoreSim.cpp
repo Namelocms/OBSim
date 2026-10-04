@@ -77,7 +77,7 @@ void CoreSim::run(SimClock& clock) {
 	this->OB.resetToInitial(this->parameters.obStartPrice, this->parameters.obShareFloat, true);  // = OrderBook(clock, this->parameters.obStartPrice, this->parameters.obShareFloat);
 	this->OB.clock = &clock;
 	this->OB.features = this->parameters.features;
-	this->broker.stats = BrokerStats();
+	this->broker.reset();
 
 	// The agents map was just cleared, so every pooled slot id in the free list is dangling
 	this->transientFreeList.clear();
@@ -230,6 +230,8 @@ void CoreSim::run(SimClock& clock) {
 		if (!agent->shouldAct(this->OB.session, clock.simTimeMs)) { continue; }
 
 		agent->actRandom();
+		// Whatever that action's prints and fills triggered, acted on now that matching is done
+		this->broker.processTriggers();
 
 		// Before rescheduling, so a slot that just went back to the pool is not given an
 		// event it would only discard
@@ -443,6 +445,9 @@ void CoreSim::initAgents(unsigned int _agentStartCount) {
 	for (size_t i = 0; i < instAgents.size(); ++i) { this->seedHolding(instAgents[i], instShares[i]); }
 	for (size_t i = 0; i < retailAgents.size(); ++i) { this->seedHolding(retailAgents[i], retailShares[i]); }
 
+	// The account rules test dollar thresholds in unit dollars, against this
+	this->OB.cashScale = this->cashScale;
+
 	// Drawn last, once every resident exists. See rollRunTransientFraction.
 	this->rollRunTransientFraction();
 }
@@ -576,6 +581,8 @@ bool CoreSim::pumpBackDataEvents(double targetMs, SimClock& clock, long long& ev
 		if (!agent->shouldAct(this->OB.session, clock.simTimeMs)) { continue; }
 
 		agent->actRandom();
+		// Whatever that action's prints and fills triggered, acted on now that matching is done
+		this->broker.processTriggers();
 
 		this->updateTransientLifecycle(agent, clock.simTimeMs);
 		if (agent->status != AgentStatus::POOLED) {
@@ -692,6 +699,10 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 
 		// Expire resting orders when the closing session expires them.
 		// PREMARKET is skipped, it rolls into REGULAR the way it does in real markets.
+		// A day's margin interest, once per day, at the afterhours close: the boundary every
+		// day has, whether or not its overnight is simulated
+		if (endingSession == Session::AFTERHOURS) { this->broker.accrueMarginInterest(); }
+
 		if (MarketCalendar::expiresAtSessionEnd(endingSession)) {
 			unsigned int expiredCount = this->OB.expireOrders(boundaryMs);
 			if (expiredCount > 0 && this->onLog) {

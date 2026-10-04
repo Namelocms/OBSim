@@ -30,4 +30,12 @@ struct Features {
 		FeeSchedule retail = FeeSchedule::zeroCommissionRetail();
 		FeeSchedule institution = FeeSchedule::institutionalPerShare();
 	} fees;
+
+	/* OrderModelPlan Step 1.2: margin accounts. An account with at least MARGIN_MIN_EQUITY of
+	*  equity may borrow against marginable stock under Reg T; every account with a debit is
+	*  held to its maintenance requirement and liquidated the moment it falls below. Interest
+	*  accrues daily. Off, every account is a cash account, as it always was. */
+	struct Margin {
+		bool enabled = false;
+	} margin;
 };

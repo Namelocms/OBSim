@@ -1,6 +1,7 @@
 add_library(Simulator
 	Account.cpp
 	Broker.cpp
+	TriggerBook.cpp
 	Agent.cpp
 	Holding.cpp
 	MatchingEngine.cpp

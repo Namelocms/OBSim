@@ -536,7 +536,7 @@ public:
 	/* Remove the given volume of holdings, return the list of holdings objects of the removed shares */
 	std::vector<Holding> removeHoldings(int volume);
 	/* Get the number of shares the Agent is currently holding */
-	unsigned int getTotalHoldings();
+	unsigned int getTotalHoldings() const;
 
 // ---- Active Order Operations ----
 	/* Update/insert an active order */

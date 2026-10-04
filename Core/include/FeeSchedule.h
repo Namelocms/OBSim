@@ -54,6 +54,16 @@ struct FeeSchedule {
 	/* FINRA TAF cap per trade */
 	double tafMaxPerTrade = 0.0;
 
+	// ---- Margin terms (OrderModelPlan Step 1.2) ----
+	//
+	// The broker's, not the regulator's: FINRA sets a floor, brokers lend on their own terms.
+	// Read whenever margin is switched on, whether or not fees are being charged.
+
+	/* Annual interest on a margin debit balance, accrued daily on a 360 day year */
+	double marginApr = 0.0;
+	/* The broker's maintenance requirement on longs, when it is above FINRA's 25% floor */
+	double houseMaintenance = 0.0;
+
 	/* Commission on an order that has filled `shares` for `value` in total so far */
 	double commission(unsigned int shares, double value) const {
 		if (shares == 0) { return 0.0; }
@@ -118,6 +128,10 @@ struct FeeSchedule {
 		f.secFeeRate = 20.60 / 1'000'000.0;
 		f.tafPerShare = 0.000195;
 		f.tafMaxPerTrade = 9.79;
+		// A retail margin rate near the middle of what brokers charge small balances, and the
+		// common 30% house maintenance. Both are calibration register entries.
+		f.marginApr = 0.085;
+		f.houseMaintenance = 0.30;
 		return f;
 	}
 	/* Institutional low-touch, per-share pricing with exchange fees passed through
@@ -137,6 +151,8 @@ struct FeeSchedule {
 		f.makerRebatePerShare = 0.0020;
 		f.subDollarTakerFeePct = 0.003;
 		f.subDollarMakerRebatePct = 0.0;
+		// Institutions borrow nearer the benchmark rate
+		f.marginApr = 0.06;
 		return f;
 	}
 };

@@ -11,6 +11,8 @@
 #include "include/MarketCalendar.h"
 #include "include/FeeSchedule.h"
 #include <cmath>
+#include <unordered_set>
+#include "include/Ledger.h"
 
 Broker::Broker(OrderBook& ob, MatchingEngine& me) : OB(ob), ME(me) {}
 
@@ -219,4 +221,133 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 	this->ME.match(order);
 	if (order->status != OrderStatus::OPEN) { agent->removeActiveOrder(order); }
 	return order;
+}
+
+// ---- Margin and the trigger pump (OrderModelPlan Step 1.2) ----
+
+void Broker::reset() {
+	this->stats = BrokerStats();
+	this->triggers.clear();
+}
+
+bool Broker::refreshMargin(const std::shared_ptr<Agent>& agent) {
+	if (agent == nullptr) { return false; }
+	double trigger = Account::liquidationPrice(*agent);
+	if (trigger > 0.0) { this->triggers.setMargin(agent->id, TriggerBook::Side::SELL, trigger); }
+	else { this->triggers.clearMargin(agent->id); }
+	return Account::inMaintenanceViolation(*agent, this->OB.currentPrice)
+		|| (Account::equity(*agent, this->OB.currentPrice) < 0.0 && agent->getTotalHoldings() == 0
+			&& agent->activeBids.empty() && agent->activeAsks.empty());
+}
+
+void Broker::processTriggers() {
+	if (this->OB.matchDepth > 0) { ++this->stats.reentrancyBlocked; return; }
+
+	// Nothing is being watched and nothing has changed: the common case with margin off,
+	// which must cost no more than this check
+	if (this->OB.dirtyAccounts.empty() && this->triggers.empty()) {
+		this->OB.printRangeValid = false;
+		return;
+	}
+
+	int rounds = 0;
+	for (; rounds < MAX_TRIGGER_ROUNDS; ++rounds) {
+		std::vector<std::shared_ptr<Agent>> toLiquidate;
+		std::unordered_set<std::string> seen;
+
+		// 1. Accounts that changed: move their trigger, and catch any already in violation
+		std::vector<std::string> dirty;
+		dirty.swap(this->OB.dirtyAccounts);
+		for (const std::string& id : dirty) {
+			if (!seen.insert(id).second) { continue; }
+			std::shared_ptr<Agent> agent = this->OB.getAgent(id);
+			if (this->refreshMargin(agent)) { toLiquidate.push_back(agent); }
+		}
+
+		// 2. Whatever the prints since the last look crossed, in firing order
+		if (this->OB.printRangeValid) {
+			double low = this->OB.printLow, high = this->OB.printHigh;
+			this->OB.printRangeValid = false;
+			for (const TriggerEntry& entry : this->triggers.collect(low, high)) {
+				if (entry.kind != TriggerKind::MARGIN) { continue; }
+				if (!seen.insert(entry.agentId).second) { continue; }
+				std::shared_ptr<Agent> agent = this->OB.getAgent(entry.agentId);
+				if (agent != nullptr) { toLiquidate.push_back(agent); }
+			}
+		}
+
+		if (toLiquidate.empty()) { break; }
+
+		// 3. Meet the calls. Their prints and fills feed the next round.
+		for (const std::shared_ptr<Agent>& agent : toLiquidate) { this->liquidate(agent); }
+		++this->stats.triggerRounds;
+	}
+
+	if (rounds >= MAX_TRIGGER_ROUNDS) { ++this->stats.roundCapHits; }
+	if (rounds > this->stats.maxRoundsInOnePump) { this->stats.maxRoundsInOnePump = rounds; }
+}
+
+void Broker::liquidate(const std::shared_ptr<Agent>& agent) {
+	if (agent == nullptr) { return; }
+	++this->stats.marginCalls;
+
+	// Everything the account has working is cancelled first: the escrow comes back, nothing
+	// can trade against the liquidation itself, and none of it changes the account's equity
+	std::vector<std::shared_ptr<Order>> working;
+	for (const auto& kv : agent->activeBids) { working.push_back(kv.second); }
+	for (const auto& kv : agent->activeAsks) { working.push_back(kv.second); }
+	for (const std::shared_ptr<Order>& order : working) { this->OB.cancelOrder(order, agent); }
+
+	double price = this->OB.currentPrice;
+	unsigned int shares = Account::liquidationShares(*agent, price);
+	if (shares == 0) { this->writeOffIfInsolvent(agent); return; }
+
+	// A market order in the regular session. Outside it, where market orders are not
+	// accepted, an IOC limit through the best bid by up to LIQUIDATION_OUTSIDE_SLIP.
+	OrderRequest request{ OrderAction::ASK, OrderType::MARKET };
+	request.volume = shares;
+	request.tif = TimeInForce::IOC;
+	request.origin = OrderOrigin::LIQUIDATION;
+	if (this->OB.session != Session::REGULAR) {
+		std::vector<std::shared_ptr<Order>> bids = this->OB.peekBestN(OrderAction::BID, 1);
+		if (bids.empty() || bids[0] == nullptr) { return; }   // nobody to sell to; the next look retries
+		request.type = OrderType::LIMIT;
+		double floor = bids[0]->price * (1.0 - LIQUIDATION_OUTSIDE_SLIP);
+		double precision = (floor < 1.00) ? 0.0001 : 0.01;
+		request.price = std::max(roundTo(floor, precision), precision);
+	}
+
+	++this->stats.liquidationOrders;
+	this->submit(request, agent);
+	this->writeOffIfInsolvent(agent);
+}
+
+void Broker::writeOffIfInsolvent(const std::shared_ptr<Agent>& agent) {
+	if (agent == nullptr) { return; }
+	if (agent->getTotalHoldings() > 0 || !agent->activeBids.empty() || !agent->activeAsks.empty()) { return; }
+	if (agent->cash >= 0.0) { return; }
+
+	// Nothing left to sell and still owing: the broker eats it
+	double loss = -agent->cash;
+	this->OB.ledger.brokerLosses += loss;
+	agent->updateCash(loss);
+	++this->stats.writeOffs;
+	if (!isLifecycleStatus(agent->status)) { agent->status = AgentStatus::BANKRUPT; }
+}
+
+void Broker::accrueMarginInterest() {
+	if (!this->OB.features.margin.enabled) { return; }
+	++this->stats.interestDays;
+	for (const auto& kv : this->OB.agents) {
+		const std::shared_ptr<Agent>& agent = kv.second;
+		if (agent == nullptr) { continue; }
+		double debit = Account::debitBalance(*agent);
+		if (debit <= 0.0) { continue; }
+		double interest = roundTo(debit * Account::feeSchedule(*agent).marginApr / 360.0);
+		if (interest <= 0.0) { continue; }
+		agent->updateCash(-interest);
+		this->OB.ledger.marginInterest += interest;
+		this->stats.interestCharged += interest;
+		this->OB.dirtyAccounts.push_back(agent->id);
+	}
 }

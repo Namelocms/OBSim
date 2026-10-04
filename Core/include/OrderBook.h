@@ -120,6 +120,22 @@ public:
 	Ledger ledger;
 	/* Which order model mechanisms are switched on. Configuration, so a reset keeps it. */
 	Features features;
+	/* Unit-dollars-to-money multiplier for this run, mirrored from CoreSim::cashScale so the
+	*  account rules can test a dollar threshold against the person an agent stands for */
+	double cashScale = 1.0;
+
+	// ---- Trigger pump inputs (OrderModelPlan Step 1.2) ----
+
+	/* Lowest and highest price printed since the broker last looked. recordTrade widens it and
+	*  never acts on it: triggers fire only after matching has returned. */
+	bool printRangeValid = false;
+	double printLow = 0.0;
+	double printHigh = 0.0;
+	/* Accounts whose cash or position changed since the broker last looked, in change order */
+	std::vector<std::string> dirtyAccounts;
+	/* How deep inside MatchingEngine::match the engine currently is. The broker refuses to
+	*  fire a trigger while this is non-zero -- that is the whole re-entrancy rule. */
+	int matchDepth = 0;
 
 	OrderBook() = default;
 	OrderBook(double currentPrice, unsigned int shareFloat = 0);

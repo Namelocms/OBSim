@@ -16,11 +16,14 @@ void MatchingEngine::match(std::shared_ptr<Order> order) {
 
 	std::shared_ptr<Agent> agent = this->OB.getAgent(order->agentId);
 
+	// Nothing may fire a trigger while this is raised, see Broker::processTriggers
+	++this->OB.matchDepth;
 	double totalCost = (order->side == OrderAction::BID)
 		? this->sweep(order, agent, this->OB.askQueue)
 		: this->sweep(order, agent, this->OB.bidQueue);
 
 	this->finishIncoming(order, agent, totalCost);
+	--this->OB.matchDepth;
 }
 
 template <typename Queue>
@@ -162,6 +165,13 @@ double MatchingEngine::settleLeg(const std::shared_ptr<Order>& incoming, const s
 	// A fill is the only thing that changes a net position, so it is where an opening is seen
 	incomingAgent->notePositionChange();
 	restingAgent->notePositionChange();
+
+	// Both accounts' margin standing may have moved; the broker re-checks them once matching
+	// has returned
+	if (this->OB.features.margin.enabled) {
+		this->OB.dirtyAccounts.push_back(incomingAgent->id);
+		this->OB.dirtyAccounts.push_back(restingAgent->id);
+	}
 
 	return cost;
 }

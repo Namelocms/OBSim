@@ -78,7 +78,7 @@ std::vector<Holding> Agent::removeHoldings(int volume) {
 
 	return removedHoldings;
 }
-unsigned int Agent::getTotalHoldings() {
+unsigned int Agent::getTotalHoldings() const {
 	return std::accumulate(this->holdings.begin(), this->holdings.end(), 0,
 		[](unsigned int sum, const auto& kv) {
 			return sum + kv.second.volume;
@@ -360,8 +360,10 @@ OrderAction Agent::getRandomAction() {
 	bool hasActiveOrder = !this->activeAsks.empty() || !this->activeBids.empty();
 	OrderAction action = OrderAction::HOLD;
 
-	// Check if agent is bankrupt
-	if (!hasCash && !hasHolding && !hasActiveOrder) {
+	// Check if agent is bankrupt. With margin on, owing more than it owns is bankrupt too,
+	// though the broker's write-off normally gets there first.
+	bool insolvent = this->OB.features.margin.enabled && Account::equity(*this, this->OB.currentPrice) <= 0.0;
+	if ((!hasCash && !hasHolding && !hasActiveOrder) || insolvent) {
 		if (this->status != AgentStatus::BANKRUPT) { this->status = AgentStatus::BANKRUPT; }
 		return action;
 	}

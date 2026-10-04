@@ -1,6 +1,8 @@
 #pragma once
 #include <memory>
 #include "Enums.h" // TimeInForce and SessionMask, needed complete for OrderRequest's defaults
+#include "TriggerBook.h"
+#include <string>
 
 class OrderBook;
 class MatchingEngine;
@@ -76,7 +78,30 @@ struct BrokerStats {
 	/* Sum and count of the spread seen as each order arrived, when both sides were quoted */
 	double spreadSum = 0.0;
 	long long spreadSamples = 0;
+
+	// ---- Margin (OrderModelPlan Step 1.2) ----
+	/* Margin calls met by liquidation, and liquidation orders sent */
+	long long marginCalls = 0;
+	long long liquidationOrders = 0;
+	/* Accounts whose negative equity was written off */
+	long long writeOffs = 0;
+	/* Trigger pump rounds run, the most in one pump, and pumps stopped by MAX_TRIGGER_ROUNDS */
+	long long triggerRounds = 0;
+	int maxRoundsInOnePump = 0;
+	long long roundCapHits = 0;
+	/* Attempts to fire a trigger from inside matching. Must stay zero; harnesses assert it. */
+	long long reentrancyBlocked = 0;
+	/* Margin interest charged, in total, across all accounts, and the days it was accrued on */
+	double interestCharged = 0.0;
+	long long interestDays = 0;
 };
+
+/* Most rounds one pump of the trigger book may run before it stops and says so
+*
+* Defense in depth, like the back-data caps: a cascade ends on its own once nothing more is
+* crossed, so reaching this means something is wrong, and it is counted rather than hidden.
+*/
+inline constexpr int MAX_TRIGGER_ROUNDS = 64;
 
 /* ---- Broker ----
 *
@@ -93,6 +118,8 @@ public:
 	OrderBook& OB;
 	MatchingEngine& ME;
 	BrokerStats stats;
+	/* Every price the broker is watching on its customers' behalf */
+	TriggerBook triggers;
 
 	Broker(OrderBook& ob, MatchingEngine& me);
 
@@ -122,7 +149,33 @@ public:
 	std::shared_ptr<Order> replace(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent,
 		double newPrice, unsigned int newVolume);
 
+	/* Act on everything the market's prints have triggered, until nothing more fires
+	*
+	* Called after every action that can trade -- an agent's, a liquidation's, later an
+	* auction's -- and NEVER from inside matching. Each round:
+	*
+	*   1. re-checks the accounts whose cash or position changed, moving their margin trigger
+	*      and catching any already in violation (interest can do that with no print at all)
+	*   2. takes every trigger the prints since the last look have crossed, in price order
+	*   3. liquidates the accounts in violation
+	*
+	* and the liquidations' own prints feed the next round, which is how a cascade happens.
+	* Stops at MAX_TRIGGER_ROUNDS, counting it, and does nothing at all while matching is
+	* under way.
+	*/
+	void processTriggers();
+	/* Charge every margin debit a day of interest, on a 360 day year, and re-check the accounts */
+	void accrueMarginInterest();
+	/* Clear the triggers and stats for a new run */
+	void reset();
+
 private:
+	/* Recompute one account's margin trigger, returning whether it is in violation right now */
+	bool refreshMargin(const std::shared_ptr<Agent>& agent);
+	/* Meet a margin call: cancel the account's orders, then sell enough to restore the target */
+	void liquidate(const std::shared_ptr<Agent>& agent);
+	/* Write off an account left with negative equity and nothing left to sell */
+	void writeOffIfInsolvent(const std::shared_ptr<Agent>& agent);
 	/* Everything submit does except the measurement around it */
 	std::shared_ptr<Order> place(const OrderRequest& request, const std::shared_ptr<Agent>& agent);
 	/* Kill an order that never reached the book, returning the escrow submit reserved for it.
