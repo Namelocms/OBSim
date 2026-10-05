@@ -210,6 +210,9 @@ public:
     * caller must re-read the top of the queue rather than reusing it.
     */
     bool processSessionBoundaries(double targetSimTimeMs, SimClock& clock);
+    /* A new trading day at the premarket open: pin the short sale restriction's reference
+    *  close, and report a restriction this open lifts. Both boundary paths come through here. */
+    void openTradingDay(double atMs);
     /* Jump the clock to resumeAtMs, drop stale events, and reschedule every agent from there */
     void skipToTime(double resumeAtMs, SimClock& clock);
     /* If a LULD trading pause has run its course by upToMs, reopen with a cross at its end

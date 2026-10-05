@@ -700,6 +700,16 @@ void CoreSim::runBackData(SimClock& clock) {
 
 // ---- Session Functions ----
 
+void CoreSim::openTradingDay(double atMs) {
+	// The restriction measures against the most recent close
+	if (this->OB.officialClose > 0.0) { this->OB.ssrReferenceClose = this->OB.officialClose; }
+	// A restriction runs to the premarket open two days after it triggered, so it is this open
+	// that lifts it. Said, because its start was.
+	if (this->OB.ssrUntilMs > 0.0 && std::fabs(atMs - this->OB.ssrUntilMs) < 1.0) {
+		this->OB.log(LogEntry::Kind::ALERT, "SHORT SALE RESTRICTION LIFTED");
+	}
+}
+
 bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) {
 	bool queueRebuilt = false;
 
@@ -759,9 +769,7 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 			}
 		}
 		// A new trading day measures the short sale restriction against the most recent close
-		if (this->OB.session == Session::PREMARKET && this->OB.officialClose > 0.0) {
-			this->OB.ssrReferenceClose = this->OB.officialClose;
-		}
+		if (this->OB.session == Session::PREMARKET) { this->openTradingDay(boundaryMs); }
 		// Bands start from the opening price
 		if (this->OB.session == Session::REGULAR && this->OB.features.luld.enabled) {
 			double open = (this->OB.officialOpen > 0.0 && this->OB.features.auctions.enabled) ? this->OB.officialOpen : this->OB.currentPrice;
@@ -794,10 +802,8 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 			this->nextBoundaryMs = MarketCalendar::nextBoundaryMs(resumeAtMs);
 
 			// A skip lands on the next premarket open without passing through the boundary
-			// above, so the new day's restriction reference is pinned here as well
-			if (this->OB.session == Session::PREMARKET && this->OB.officialClose > 0.0) {
-				this->OB.ssrReferenceClose = this->OB.officialClose;
-			}
+			// above, so the new day is opened here as well
+			if (this->OB.session == Session::PREMARKET) { this->openTradingDay(resumeAtMs); }
 
 			if (this->onLog) {
 				EnumStrings es;

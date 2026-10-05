@@ -625,6 +625,7 @@ void Broker::buyBack(const std::shared_ptr<Agent>& agent, unsigned int shares, O
 
 void Broker::buyIn(const std::shared_ptr<Agent>& agent, unsigned int shares) {
 	++this->stats.buyInOrders;
+	this->OB.log(LogEntry::Kind::RISK, "BUY-IN " + agent->id + " " + std::to_string(std::min(shares, agent->shortShares)) + " shares");
 	this->buyBack(agent, shares, OrderOrigin::LIQUIDATION);
 }
 
