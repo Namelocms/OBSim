@@ -660,6 +660,25 @@ public:
 	/* The sessions a broker would give an order placed now (D7, Features::auctions): regular
 	*  only during the regular session, extended hours outside it. All sessions with it off. */
 	SessionMask defaultSessions() const;
+
+	// ---- Order types agents use (decision D9) ----
+
+	/* Place a decided order, protecting it if this agent would.
+	*
+	* The one place an agent's own decisions reach the broker, so the rule that wraps an entry
+	* in a bracket lives in exactly one spot. With Features::agentBrackets off this is
+	* broker.submit and nothing else.
+	*/
+	void placeDecision(const OrderRequest& request);
+	/* Does this request open or add to a position, rather than close one? A buy while not
+	*  short, or a short sale. */
+	bool opensPosition(const OrderRequest& request) const;
+	/* Is this agent's view too weak to trust without protection: |sentiment| under one of its
+	*  own stationary standard deviations? Nothing outside the agent decides it. */
+	bool weakConviction() const;
+	/* The bracket an entry is wrapped in: a stop-loss and a take-profit at the agent's price
+	*  variance distance either side of the entry price, mirrored for a short */
+	BracketRequest protectiveBracket(const OrderRequest& entry);
 	/* Re-price this agent's resting quote on one side if the market has left it behind
 	*
 	* ALGO only, and only with Features::agentReplace on. Prices the new quote exactly as a

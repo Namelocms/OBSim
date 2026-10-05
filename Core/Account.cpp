@@ -49,7 +49,9 @@ bool shortingEnabled(const Agent& agent) {
 
 bool canSellShort(const Agent& agent) {
 	if (!shortingEnabled(agent)) { return false; }
-	if (agent.getTotalHoldings() > 0) { return false; }   // a long sells down to flat first
+	// A long sells down to flat first -- counting shares reserved in its own resting sales and
+	// stops, which are still its long position though they are no longer in holdings
+	if (longShares(agent) > 0) { return false; }
 	if (shortCapacity(agent) < 1) { return false; }
 	return isExemptMarketMaker(agent) || agent.OB.lending.available() >= 1.0;
 }

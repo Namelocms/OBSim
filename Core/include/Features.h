@@ -21,6 +21,14 @@ struct Features {
 	*  flat) rather than +1 for everyone, and adversity is measured from where the position
 	*  opened rather than from the level of sentiment. Changes transient departures. */
 	bool adversityFromEntry = false;
+	/* Decision D9 (OrderModelPlan 2.1/2.2): an agent opening a position with weak conviction --
+	*  under one of its own sentiment standard deviations -- protects it with a bracket: a
+	*  stop-loss and a take-profit at its own price-variance distance. Market makers excluded.
+	*  Nothing sets how many agents do it; their personalities do. */
+	bool agentBrackets = false;
+	/* Decision D9 (OrderModelPlan 3.4): market makers quote post-only, repriced a tick passive
+	*  if a quote would cross, since the maker rebate is only earned by not taking */
+	bool agentPostOnly = false;
 
 	/* OrderModelPlan Step 1.1: what trading costs. Off, every trade is free, as it always was.
 	*  On, each agent pays the schedule for its type. The defaults are the generic presets in

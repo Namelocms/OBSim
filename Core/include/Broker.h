@@ -156,6 +156,11 @@ struct BrokerStats {
 	long long stopsCancelled = 0;
 	/* Trailing stop triggers moved by a new extreme */
 	long long trailMoves = 0;
+	/* Stop cascades: pumps in which any stop fired, those in which three or more did, and the
+	*  most stops one pump fired. Measurement only. */
+	long long pumpsWithStops = 0;
+	long long cascadePumps = 0;
+	int maxStopsInOnePump = 0;
 
 	// ---- Contingent orders (OrderModelPlan Step 2.2) ----
 	long long groupsCreated = 0;
@@ -308,7 +313,8 @@ private:
 	/* A bracket's entry filled some more: create or grow its OCO pair by that much */
 	void growBracket(OrderGroup& group, unsigned int volume);
 	/* The pair is settled: mark it, and cancel what is left of a bracket's entry */
-	void resolveGroup(OrderGroup& group);
+	/* ...and cancel every leg still live, except `keep` (a stop being released right now) */
+	void resolveGroup(OrderGroup& group, const Order* keep = nullptr);
 	/* The OCO's held stop triggered: cancel the book leg, take over its shares, then release */
 	void takeOverFromBookLeg(OrderGroup& group, const std::shared_ptr<Order>& heldLeg);
 	/* Hold a stop leg that shares an OCO sibling's reservation instead of reserving its own */

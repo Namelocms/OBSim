@@ -161,7 +161,7 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 	else {
 		// A short sale. Never both: an account holding shares sells them first. It needs margin
 		// for the new short, and either a locate or a market maker's exemption.
-		if (!Account::shortingEnabled(*agent) || agent->getTotalHoldings() > 0) { return nullptr; }
+		if (!Account::shortingEnabled(*agent) || Account::longShares(*agent) > 0) { return nullptr; }
 		// Rule 201 in force: a short sale may not execute or display at or below the best bid,
 		// market makers included. A market order cannot promise that, so it is refused; a limit
 		// at or under the bid is repriced a tick above it.
@@ -412,8 +412,12 @@ std::shared_ptr<Order> Broker::hold(const OrderRequest& request, const std::shar
 	std::vector<Holding> reserved;
 	if (sell) {
 		if (request.mark != SaleMark::LONG) { return nullptr; }
-		if (request.volume > agent->getTotalHoldings()) { return nullptr; }
-		if (reserveShares) { reserved = agent->removeHoldings(int(request.volume)); }
+		// A leg sharing an OCO sibling's reservation does not check holdings: the sibling holds
+		// the shares, and the group keeps the two the same size
+		if (reserveShares) {
+			if (request.volume > agent->getTotalHoldings()) { return nullptr; }
+			reserved = agent->removeHoldings(int(request.volume));
+		}
 	}
 
 	double expiresAtMs = 0.0;
@@ -527,6 +531,21 @@ void Broker::release(const std::shared_ptr<Order>& order) {
 	if (agent == nullptr) { order->status = OrderStatus::CANCELED; return; }
 	agent->heldOrders.erase(order->id);
 	++this->stats.stopsTriggered;
+
+	// A sell stop that shared its group's reservation and has no group left to take shares
+	// over from takes what the account actually holds, and no more. It can never sell shares
+	// that are not there.
+	if (order->side == OrderAction::ASK && order->reservedByGroup) {
+		unsigned int shares = std::min(order->volume, agent->getTotalHoldings());
+		order->reservedShares = agent->removeHoldings(int(shares));
+		order->volume = shares;
+		order->reservedByGroup = false;
+		if (shares == 0) {
+			order->status = OrderStatus::CANCELED;
+			++this->stats.stopsRefusedAtTrigger;
+			return;
+		}
+	}
 
 	// It enters the book now, as a new order would, behind everything already there
 	order->timestamp = this->OB.clock->simTimeMs;
@@ -688,6 +707,7 @@ void Broker::runPump() {
 	}
 
 	int rounds = 0;
+	int stopsThisPump = 0;
 	std::unordered_set<std::string> attemptedBuyIn;   // one attempt per account per pump
 	for (; rounds < MAX_TRIGGER_ROUNDS; ++rounds) {
 		std::vector<std::shared_ptr<Agent>> toLiquidate;
@@ -753,6 +773,7 @@ void Broker::runPump() {
 		//    next round, which is how a cascade happens.
 		for (const std::shared_ptr<Agent>& agent : toLiquidate) { this->liquidate(agent); }
 		for (const std::shared_ptr<Order>& order : toRelease) { this->release(order); }
+		stopsThisPump += (int)toRelease.size();
 		for (const std::shared_ptr<Agent>& agent : toBuyIn) {
 			attemptedBuyIn.insert(agent->id);
 			this->buyIn(agent, agent->buyInDue);
@@ -768,6 +789,9 @@ void Broker::runPump() {
 
 	if (rounds >= MAX_TRIGGER_ROUNDS) { ++this->stats.roundCapHits; }
 	if (rounds > this->stats.maxRoundsInOnePump) { this->stats.maxRoundsInOnePump = rounds; }
+	if (stopsThisPump > 0) { ++this->stats.pumpsWithStops; }
+	if (stopsThisPump >= 3) { ++this->stats.cascadePumps; }
+	if (stopsThisPump > this->stats.maxStopsInOnePump) { this->stats.maxStopsInOnePump = stopsThisPump; }
 }
 
 void Broker::liquidate(const std::shared_ptr<Agent>& agent) {
@@ -1016,20 +1040,10 @@ void Broker::processGroupEvents() {
 			}
 			else {
 				// A cancelled child takes its sibling with it. A cancelled entry leaves the children,
-				// which protect what it already filled.
+				// which protect what it already filled. A cancel of a leg the group has since
+				// replaced (an old id) says nothing about the legs it has now, and is ignored.
 				if (group->resolved || event.orderId == group->parentId) { continue; }
-				if (event.orderId == group->bookLegId) {
-					auto heldIt = this->held.find(group->heldLegId);
-					if (heldIt != this->held.end()) { this->cancelHeld(heldIt->second, agent); }
-				}
-				else if (event.orderId == group->heldLegId) {
-					std::shared_ptr<Order> book;
-					auto a = agent->activeAsks.find(group->bookLegId);
-					if (a != agent->activeAsks.end()) { book = a->second; }
-					auto b = agent->activeBids.find(group->bookLegId);
-					if (b != agent->activeBids.end()) { book = b->second; }
-					if (book != nullptr) { this->OB.cancelOrder(book, agent); }
-				}
+				if (event.orderId != group->bookLegId && event.orderId != group->heldLegId) { continue; }
 				this->resolveGroup(*group);
 			}
 		}
@@ -1042,28 +1056,21 @@ void Broker::growBracket(OrderGroup& group, unsigned int volume) {
 	if (agent == nullptr) { return; }
 	++this->stats.bracketGrowths;
 
-	// The stop-loss first: it shares the take-profit's reservation, so it must exist before
-	// the take-profit takes the shares
-	auto heldIt = this->held.find(group.heldLegId);
-	if (heldIt != this->held.end()) { heldIt->second->volume += volume; }
-	else {
-		OrderRequest sl{ group.childSide, OrderType::MARKET };
-		sl.stopPrice = group.stopLoss;
-		sl.volume = volume;
-		sl.tif = group.childTif;
-		std::shared_ptr<Order> stop = this->holdShared(sl, agent, group.id);
-		if (stop == nullptr) { return; }   // the market is already through the stop-loss
-		group.heldLegId = stop->id;
-	}
-
-	// Then the take-profit: placed the first time, grown by a replace after that
+	// The take-profit first, because it is the leg that holds the shares. Only what it actually
+	// manages to take on is added to the stop-loss, so the two never drift apart -- a stop that
+	// shares a reservation must never protect more than is reserved. (The fill may not even have
+	// added shares: if the agent had gone short meanwhile, it covered instead.)
 	std::shared_ptr<Order> book;
 	auto a = agent->activeAsks.find(group.bookLegId);
 	if (a != agent->activeAsks.end()) { book = a->second; }
 	auto b = agent->activeBids.find(group.bookLegId);
 	if (b != agent->activeBids.end()) { book = b->second; }
+	unsigned int added = 0;
 	if (book != nullptr) {
-		this->replace(book, agent, book->price, book->volume + volume);
+		unsigned int before = book->volume;
+		if (this->replace(book, agent, book->price, book->volume + volume) != nullptr) {
+			added = (book->status == OrderStatus::OPEN && book->volume > before) ? book->volume - before : 0;
+		}
 	}
 	else {
 		OrderRequest tp{ group.childSide, OrderType::LIMIT };
@@ -1072,7 +1079,23 @@ void Broker::growBracket(OrderGroup& group, unsigned int volume) {
 		tp.tif = group.childTif;
 		tp.expiresAtMs = 0.0;
 		std::shared_ptr<Order> placed = this->placeTagged(tp, agent, group.id);
-		if (placed != nullptr) { group.bookLegId = placed->id; }
+		if (placed != nullptr) {
+			group.bookLegId = placed->id;
+			added = (placed->status == OrderStatus::OPEN) ? placed->volume : 0;
+		}
+	}
+	if (added == 0) { return; }
+
+	// Then the stop-loss, by exactly what the take-profit took on
+	auto heldIt = this->held.find(group.heldLegId);
+	if (heldIt != this->held.end()) { heldIt->second->volume += added; }
+	else {
+		OrderRequest sl{ group.childSide, OrderType::MARKET };
+		sl.stopPrice = group.stopLoss;
+		sl.volume = added;
+		sl.tif = group.childTif;
+		std::shared_ptr<Order> stop = this->holdShared(sl, agent, group.id);
+		if (stop != nullptr) { group.heldLegId = stop->id; }   // refused: the market is already through it
 	}
 }
 
@@ -1095,18 +1118,27 @@ void Broker::takeOverFromBookLeg(OrderGroup& group, const std::shared_ptr<Order>
 		heldLeg->volume = shares;
 		heldLeg->reservedByGroup = false;
 	}
-	this->resolveGroup(group);
+	this->resolveGroup(group, heldLeg.get());
 }
 
-void Broker::resolveGroup(OrderGroup& group) {
+void Broker::resolveGroup(OrderGroup& group, const Order* keep) {
+	if (group.resolved && this->groups.find(group.id) == this->groups.end()) { return; }
 	group.resolved = true;
 	++this->stats.groupsResolved;
 	std::shared_ptr<Agent> agent = this->OB.getAgent(group.agentId);
-	if (agent != nullptr && !group.parentId.empty()) {
-		auto a = agent->activeAsks.find(group.parentId);
-		if (a != agent->activeAsks.end()) { this->OB.cancelOrder(a->second, agent); }
-		auto b = agent->activeBids.find(group.parentId);
-		if (b != agent->activeBids.end()) { this->OB.cancelOrder(b->second, agent); }
+	if (agent != nullptr) {
+		// Every leg still live goes, so nothing of a settled group can act on its own later --
+		// least of all a stop that shared a reservation it no longer has. The entry's remainder
+		// goes too: the position it was building is closed.
+		for (const std::string& id : { group.bookLegId, group.parentId }) {
+			if (id.empty()) { continue; }
+			auto a = agent->activeAsks.find(id);
+			if (a != agent->activeAsks.end() && a->second.get() != keep) { this->OB.cancelOrder(a->second, agent); continue; }
+			auto b = agent->activeBids.find(id);
+			if (b != agent->activeBids.end() && b->second.get() != keep) { this->OB.cancelOrder(b->second, agent); }
+		}
+		auto heldIt = this->held.find(group.heldLegId);
+		if (heldIt != this->held.end() && heldIt->second.get() != keep) { this->cancelHeld(heldIt->second, agent); }
 	}
 	this->groups.erase(group.id);
 }

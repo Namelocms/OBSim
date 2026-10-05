@@ -7,6 +7,7 @@
 #include "include/Broker.h"
 #include "include/Account.h"
 #include <climits>
+#include <cmath>
 #include "include/SimClock.h"
 #include "include/MarketCalendar.h"
 
@@ -136,7 +137,7 @@ void Agent::actRandom() {
 			request = this->makeMarketBid();
 			// An agent that cannot afford or source the order simply does nothing
 			if (request.empty()) { break; }
-			this->broker.submit(request, shared_from_this());
+			this->placeDecision(request);
 			break;
 		case OrderType::LIMIT:
 			if (this->subType == AgentSubType::ALGO && this->activeBids.size() > 0) {
@@ -145,7 +146,7 @@ void Agent::actRandom() {
 			}
 			request = this->makeLimitBid();
 			if (request.empty()) { break; }
-			this->broker.submit(request, shared_from_this());
+			this->placeDecision(request);
 			break;
 		}
 		break;
@@ -156,7 +157,7 @@ void Agent::actRandom() {
 			if (this->type == AgentType::INSTITUTION || this->subType == AgentSubType::ALGO) { break; }
 			request = this->makeMarketAsk();
 			if (request.empty()) { break; }
-			this->broker.submit(request, shared_from_this());
+			this->placeDecision(request);
 			break;
 		case OrderType::LIMIT:
 			if (this->subType == AgentSubType::ALGO && this->activeAsks.size() > 0) {
@@ -165,7 +166,7 @@ void Agent::actRandom() {
 			}
 			request = this->makeLimitAsk();
 			if (request.empty()) { break; }
-			this->broker.submit(request, shared_from_this());
+			this->placeDecision(request);
 			break;
 		}
 		break;
@@ -430,9 +431,15 @@ OrderRequest Agent::makeLimitBid(bool forceAggressive, bool fullSize) {
 	request.sessions = this->defaultSessions();
 
 	// Crossing orders are priced off the opposite touch, passive ones off the last trade
-	double chosenPrice = (forceAggressive || this->rollAggressive())
-		? this->getMarketablePrice(OrderAction::BID) : -1.0;
-	if (chosenPrice <= 0.0) { chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::BID); }
+	bool crossing = (forceAggressive || this->rollAggressive());
+	double chosenPrice = crossing ? this->getMarketablePrice(OrderAction::BID) : -1.0;
+	if (chosenPrice <= 0.0) { chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::BID); crossing = false; }
+	// A market maker's passive quote is post-only (D9): it is there to earn the rebate, and a
+	// quote that would cross is repriced a tick passive rather than taking
+	if (this->OB.features.agentPostOnly && this->subType == AgentSubType::ALGO) {
+		request.postOnly = !crossing;
+		request.postOnlyReprice = true;
+	}
 
 	// A short agent's bid is a buy to cover, sized against what it owes rather than its cash
 	if (this->shortShares > 0) {
@@ -451,6 +458,7 @@ OrderRequest Agent::makeLimitBid(bool forceAggressive, bool fullSize) {
 	if (maxPurchasable < 1) {
 		chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::BID);
 		maxPurchasable = int(Account::affordableVolume(*this, chosenPrice));
+		if (this->OB.features.agentPostOnly && this->subType == AgentSubType::ALGO) { request.postOnly = true; }
 	}
 	if (maxPurchasable < 1) { return request; }
 
@@ -478,9 +486,15 @@ OrderRequest Agent::makeLimitAsk(bool forceAggressive, bool fullSize) {
 	request.sessions = this->defaultSessions();
 
 	// Crossing orders are priced off the opposite touch, passive ones off the last trade
-	double chosenPrice = (forceAggressive || this->rollAggressive())
-		? this->getMarketablePrice(OrderAction::ASK) : -1.0;
-	if (chosenPrice <= 0.0) { chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::ASK); }
+	bool crossing = (forceAggressive || this->rollAggressive());
+	double chosenPrice = crossing ? this->getMarketablePrice(OrderAction::ASK) : -1.0;
+	if (chosenPrice <= 0.0) { chosenPrice = this->getBetaPrice(this->OB.currentPrice, OrderAction::ASK); crossing = false; }
+	// A market maker's passive quote is post-only (D9): it is there to earn the rebate, and a
+	// quote that would cross is repriced a tick passive rather than taking
+	if (this->OB.features.agentPostOnly && this->subType == AgentSubType::ALGO) {
+		request.postOnly = !crossing;
+		request.postOnlyReprice = true;
+	}
 
 	int chosenVol = 1;
 
@@ -509,6 +523,36 @@ OrderRequest Agent::shortSaleSize(OrderRequest request, bool fullSize) {
 	request.volume = fullSize ? cap : (unsigned int)randomInt(1, int(std::min<unsigned int>(cap, (unsigned int)INT_MAX)));
 	request.mark = exempt ? SaleMark::SHORT_EXEMPT : SaleMark::SHORT;
 	return request;
+}
+bool Agent::opensPosition(const OrderRequest& request) const {
+	if (request.side == OrderAction::BID) { return this->shortShares == 0; }
+	return request.side == OrderAction::ASK && request.mark != SaleMark::LONG;
+}
+bool Agent::weakConviction() const {
+	return std::fabs(this->sentiment) < this->sentimentStationarySd;
+}
+BracketRequest Agent::protectiveBracket(const OrderRequest& entry) {
+	BracketRequest bracket;
+	bracket.entry = entry;
+	bracket.childTif = TimeInForce::GTC;
+
+	double ref = (entry.type == OrderType::LIMIT && entry.price > 0.0) ? entry.price : this->OB.currentPrice;
+	double distance = this->getMaxVariance(ref);
+	double precision = (ref < 1.00) ? 0.0001 : 0.01;
+	double below = std::max(roundTo(ref * (1.0 - distance), precision), precision);
+	double above = roundTo(ref * (1.0 + distance), precision);
+	if (entry.side == OrderAction::BID) { bracket.stopLoss = below; bracket.takeProfit = above; }
+	else { bracket.stopLoss = above; bracket.takeProfit = below; }
+	return bracket;
+}
+void Agent::placeDecision(const OrderRequest& request) {
+	if (this->OB.features.agentBrackets && this->subType != AgentSubType::ALGO
+		&& this->opensPosition(request) && this->weakConviction()) {
+		// A refused bracket (the market already past where the stop would go) falls back to the
+		// plain order: the agent still wants the trade
+		if (this->broker.submitBracket(this->protectiveBracket(request), shared_from_this()) != nullptr) { return; }
+	}
+	this->broker.submit(request, shared_from_this());
 }
 SessionMask Agent::defaultSessions() const {
 	if (!this->OB.features.auctions.regularOnlyAgentOrders) { return SESSIONS_ALL; }
