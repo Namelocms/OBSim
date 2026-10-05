@@ -42,6 +42,9 @@ enum class Session;
 */
 inline constexpr std::size_t TICK_HISTORY_MAX = 250'000;
 
+/* Reg SHO Rule 201's trigger: a fall of 10% or more from the prior day's close */
+inline constexpr double SSR_TRIGGER_DECLINE = 0.10;
+
 /* Where a print came from. A cross prints once, at its single clearing price, for everything
 *  it matched; the official open and close come from the crosses (OrderModelPlan Step 3.1). */
 enum class PrintKind { CONTINUOUS, OPEN_CROSS, CLOSE_CROSS, REOPEN_CROSS };
@@ -159,6 +162,18 @@ public:
 	double previousClose = 0.0;
 	/* LULD bands, limit state and trading pauses (OrderModelPlan Step 3.2) */
 	LuldState luld;
+
+	// ---- Short sale restriction, Reg SHO Rule 201 (OrderModelPlan Step 3.3) ----
+
+	/* The close today's restriction measures against: the most recent official close, pinned at
+	*  the day's premarket open so a print after today's close still measures against
+	*  yesterday's, as the rule intends. 0 on the first day, when there is no prior close. */
+	double ssrReferenceClose = 0.0;
+	/* Sim time the restriction lifts: the end of the day after the one it triggered on. 0 for none. */
+	double ssrUntilMs = 0.0;
+	long long ssrTriggers = 0;
+	/* Is the restriction in force at this time? */
+	bool ssrActive(double nowMs) const { return nowMs < this->ssrUntilMs; }
 	/* Queue an on-open or on-close order for its cross */
 	void queueForAuction(const std::shared_ptr<Order>& order);
 	/* Take an order out of the auction queue, returning whether it was there */

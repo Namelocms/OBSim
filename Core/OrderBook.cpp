@@ -160,6 +160,14 @@ void OrderBook::recordTrade(double price, unsigned int volume, OrderAction aggre
 	this->tickHistory.push_back(TradePrint(price, volume, this->clock->simTimeMs, aggressor, kind));
 	if (this->luld.active) { Luld::onPrint(*this, price, this->clock->simTimeMs); }
 
+	// Rule 201: a 10% fall from the prior close restricts short sales for the rest of today and
+	// all of tomorrow. Recording only; the broker enforces it on short sale orders.
+	if (this->features.shorting.enabled && this->ssrReferenceClose > 0.0 && !this->ssrActive(this->clock->simTimeMs)
+		&& price <= this->ssrReferenceClose * (1.0 - SSR_TRIGGER_DECLINE) + 1e-12) {
+		this->ssrUntilMs = MarketCalendar::dayStartMs(MarketCalendar::dayIndex(this->clock->simTimeMs) + 2);
+		++this->ssrTriggers;
+	}
+
 	// Recorded for the broker to act on afterwards, never acted on here
 	this->pendingPrints.push_back(price);
 
@@ -259,6 +267,9 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->officialClose = 0.0;
 	this->previousClose = 0.0;
 	this->luld.reset();
+	this->ssrReferenceClose = 0.0;
+	this->ssrUntilMs = 0.0;
+	this->ssrTriggers = 0;
 	this->dirtyAccounts.clear();
 	this->matchDepth = 0;
 	//this->orderHistory.clear();

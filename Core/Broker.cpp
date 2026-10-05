@@ -71,6 +71,8 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 		(this->OB.currentPrice < 1.0) ? 0.0001 : 0.01);
 	const bool escrowed = isLimit || (auction && request.side == OrderAction::BID);
 	const double escrowPrice = isLimit ? request.price : collarPrice;
+	// A short sale's limit may be lifted above the bid by the short sale restriction, below
+	double limitPrice = request.price;
 
 	TimeInForce tif = (isLimit || auction) ? request.tif : TimeInForce::IOC;
 	double expiresAtMs = 0.0;
@@ -133,6 +135,16 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 		// A short sale. Never both: an account holding shares sells them first. It needs margin
 		// for the new short, and either a locate or a market maker's exemption.
 		if (!Account::shortingEnabled(*agent) || agent->getTotalHoldings() > 0) { return nullptr; }
+		// Rule 201 in force: a short sale may not execute or display at or below the best bid,
+		// market makers included. A market order cannot promise that, so it is refused; a limit
+		// at or under the bid is repriced a tick above it.
+		if (this->OB.ssrActive(nowMs)) {
+			if (!isLimit && !auction) { ++this->stats.ssrRefused; return nullptr; }
+			if (isLimit) {
+				double floor = this->ssrFloor();
+				if (floor > 0.0 && limitPrice < floor - 1e-12) { limitPrice = floor; ++this->stats.ssrRepriced; }
+			}
+		}
 		if (request.volume > Account::shortCapacity(*agent)) { return nullptr; }
 		if (request.mark == SaleMark::SHORT_EXEMPT) {
 			if (!Account::isExemptMarketMaker(*agent)) { return nullptr; }
@@ -143,7 +155,7 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 	std::shared_ptr<Order> order = std::make_shared<Order>(
 		this->OB.makeId(ID_TYPE::ORDER),
 		agent->id,
-		isLimit ? request.price : ((auction && request.side == OrderAction::BID) ? collarPrice : -1.0),
+		isLimit ? limitPrice : ((auction && request.side == OrderAction::BID) ? collarPrice : -1.0),
 		request.volume,
 		nowMs,
 		request.side,
@@ -225,6 +237,10 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 		}
 	}
 	else if (order->isShortSale()) {
+		if (this->OB.ssrActive(this->OB.clock->simTimeMs)) {
+			double floor = this->ssrFloor();
+			if (floor > 0.0 && newPrice < floor - 1e-12) { newPrice = floor; ++this->stats.ssrRepriced; }
+		}
 		if (newVolume > oldVolume) {
 			unsigned int more = newVolume - oldVolume;
 			bool carried = more <= Account::shortCapacity(*agent)
@@ -293,6 +309,13 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 }
 
 // ---- Margin and the trigger pump (OrderModelPlan Step 1.2) ----
+
+double Broker::ssrFloor() const {
+	std::vector<std::shared_ptr<Order>> bid = this->OB.peekBestN(OrderAction::BID, 1);
+	if (bid.empty() || bid[0] == nullptr) { return 0.0; }
+	double tick = (bid[0]->price < 1.00) ? 0.0001 : 0.01;
+	return roundTo(bid[0]->price + tick, tick);
+}
 
 void Broker::reset() {
 	this->stats = BrokerStats();

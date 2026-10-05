@@ -154,6 +154,11 @@ struct BrokerStats {
 	// ---- LULD (OrderModelPlan Step 3.2) ----
 	long long tradingPauses = 0;
 	long long reopenings = 0;
+
+	// ---- Short sale restriction (OrderModelPlan Step 3.3) ----
+	/* Short market orders refused, and short limits lifted above the bid, while it was in force */
+	long long ssrRefused = 0;
+	long long ssrRepriced = 0;
 };
 
 /* Most rounds one pump of the trigger book may run before it stops and says so
@@ -249,6 +254,9 @@ public:
 	unsigned int expireHeld(double nowMs);
 	/* May a stop trigger in the current session? */
 	bool stopsActive() const;
+	/* The lowest price a short sale may be offered at under Rule 201: a tick above the best bid,
+	*  or 0 with no bid to measure from */
+	double ssrFloor() const;
 
 	/* Place an OCO: a limit leg in the book and a stop leg held, same side, same size. The limit
 	*  leg reserves the shares (or cash); the stop leg shares the reservation. */

@@ -727,8 +727,15 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 				this->onLog({ LogEntry::Kind::FILL, boundaryMs, "CLOSING CROSS " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
 			}
 		}
-		// Bands end with the regular session
-		if (endingSession == Session::REGULAR) { Luld::stop(this->OB); }
+		// Bands end with the regular session. Without auctions, the official close is simply the
+		// last regular-session trade.
+		if (endingSession == Session::REGULAR) {
+			Luld::stop(this->OB);
+			if (!this->OB.features.auctions.enabled) {
+				this->OB.previousClose = this->OB.officialClose;
+				this->OB.officialClose = this->OB.currentPrice;
+			}
+		}
 		// Market makers borrow against their exempt shorts at the close...
 		if (endingSession == Session::REGULAR) { this->broker.borrowForFails(); }
 
@@ -749,6 +756,10 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 			if (this->onLog && cross.matched > 0) {
 				this->onLog({ LogEntry::Kind::FILL, boundaryMs, "OPENING CROSS " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
 			}
+		}
+		// A new trading day measures the short sale restriction against the most recent close
+		if (this->OB.session == Session::PREMARKET && this->OB.officialClose > 0.0) {
+			this->OB.ssrReferenceClose = this->OB.officialClose;
 		}
 		// Bands start from the opening price
 		if (this->OB.session == Session::REGULAR && this->OB.features.luld.enabled) {
@@ -780,6 +791,12 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 
 			this->OB.session = MarketCalendar::sessionAt(resumeAtMs);
 			this->nextBoundaryMs = MarketCalendar::nextBoundaryMs(resumeAtMs);
+
+			// A skip lands on the next premarket open without passing through the boundary
+			// above, so the new day's restriction reference is pinned here as well
+			if (this->OB.session == Session::PREMARKET && this->OB.officialClose > 0.0) {
+				this->OB.ssrReferenceClose = this->OB.officialClose;
+			}
 
 			if (this->onLog) {
 				EnumStrings es;
