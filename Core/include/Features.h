@@ -66,4 +66,12 @@ struct Features {
 		*  in every session, as it always has. */
 		bool regularOnlyAgentOrders = false;
 	} auctions;
+
+	/* OrderModelPlan Step 3.2: Limit Up-Limit Down price bands and trading pauses, regular
+	*  session only. The tier picks the band widths; Tier 2 (10% above $3) covers most stocks
+	*  outside the large-cap indexes, so it is the default for a single unnamed stock. */
+	struct Luld {
+		bool enabled = false;
+		int tier = 2;
+	} luld;
 };

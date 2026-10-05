@@ -212,6 +212,9 @@ public:
     bool processSessionBoundaries(double targetSimTimeMs, SimClock& clock);
     /* Jump the clock to resumeAtMs, drop stale events, and reschedule every agent from there */
     void skipToTime(double resumeAtMs, SimClock& clock);
+    /* If a LULD trading pause has run its course by upToMs, reopen with a cross at its end
+    *  (OrderModelPlan Step 3.2). Shared by the back-data pump and the live loop. */
+    void endTradingPauseIfDue(double upToMs, SimClock& clock);
 
     // ---- Event Functions ----
 

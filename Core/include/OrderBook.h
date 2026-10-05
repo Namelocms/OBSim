@@ -14,6 +14,7 @@
 #include "Features.h"
 #include "StockLoan.h"
 #include "OrderGroup.h"
+#include "Luld.h"
 
 class Agent;
 class SimClock;
@@ -156,6 +157,8 @@ public:
 	double officialClose = 0.0;
 	/* The previous day's official close: what the short sale restriction measures against */
 	double previousClose = 0.0;
+	/* LULD bands, limit state and trading pauses (OrderModelPlan Step 3.2) */
+	LuldState luld;
 	/* Queue an on-open or on-close order for its cross */
 	void queueForAuction(const std::shared_ptr<Order>& order);
 	/* Take an order out of the auction queue, returning whether it was there */

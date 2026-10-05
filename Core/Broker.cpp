@@ -14,6 +14,7 @@
 #include <unordered_set>
 #include <algorithm>
 #include "include/Ledger.h"
+#include "include/Luld.h"
 
 Broker::Broker(OrderBook& ob, MatchingEngine& me) : OB(ob), ME(me) {}
 
@@ -604,6 +605,17 @@ bool Broker::refreshMargin(const std::shared_ptr<Agent>& agent) {
 
 void Broker::processTriggers() {
 	if (this->OB.matchDepth > 0) { ++this->stats.reentrancyBlocked; return; }
+	// During a LULD trading pause nothing trades, so nothing is acted on: stops and margin
+	// calls wait for the reopening cross's print
+	if (this->OB.luld.paused) { return; }
+	this->runPump();
+	// After the pump has settled, see whether the book is sitting at a band
+	if (this->OB.luld.active && Luld::checkLimitState(this->OB, this->OB.clock->simTimeMs)) {
+		++this->stats.tradingPauses;
+	}
+}
+
+void Broker::runPump() {
 
 	// Nothing is being watched and nothing has changed: the common case with every mechanism
 	// off, which must cost no more than this check

@@ -6,6 +6,7 @@
 #include "include/SimClock.h"
 #include "include/MarketCalendar.h"
 #include <algorithm>
+#include "include/Luld.h"
 
 OrderBook::OrderBook(double currentPrice, unsigned int shareFloat) : clock(clock), currentPrice(currentPrice), shareFloat(shareFloat) {
 	this->setTickPrecision(currentPrice);
@@ -157,6 +158,7 @@ void OrderBook::recordTrade(double price, unsigned int volume, OrderAction aggre
 	if (volume == 0) { return; }
 	this->tickCount++;
 	this->tickHistory.push_back(TradePrint(price, volume, this->clock->simTimeMs, aggressor, kind));
+	if (this->luld.active) { Luld::onPrint(*this, price, this->clock->simTimeMs); }
 
 	// Recorded for the broker to act on afterwards, never acted on here
 	this->pendingPrints.push_back(price);
@@ -256,6 +258,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->officialOpen = 0.0;
 	this->officialClose = 0.0;
 	this->previousClose = 0.0;
+	this->luld.reset();
 	this->dirtyAccounts.clear();
 	this->matchDepth = 0;
 	//this->orderHistory.clear();

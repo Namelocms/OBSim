@@ -39,6 +39,11 @@ double MatchingEngine::sweep(const std::shared_ptr<Order>& order, const std::sha
 	// An order outside its sessions does not match at all. A limit order rests until its
 	// session comes round; anything that may not rest is cancelled by finishIncoming.
 	if (!order->eligibleIn(session)) { return totalCost; }
+	// Nor does anything during a LULD trading pause: orders rest for the reopening cross
+	if (this->OB.luld.paused) { return totalCost; }
+	// And nothing prints outside the LULD bands while they are in force
+	const double upperBand = this->OB.luld.active ? this->OB.luld.upper : 0.0;
+	const double lowerBand = this->OB.luld.active ? this->OB.luld.lower : 0.0;
 
 	auto it = opposite.begin();
 	while (it != opposite.end() && order->volume > 0) {
@@ -50,6 +55,8 @@ double MatchingEngine::sweep(const std::shared_ptr<Order>& order, const std::sha
 			bool crosses = isBid ? (resting->price <= order->price) : (resting->price >= order->price);
 			if (!crosses) { break; }
 		}
+		if (isBid && upperBand > 0.0 && resting->price > upperBand + 1e-9) { break; }
+		if (!isBid && lowerBand > 0.0 && resting->price < lowerBand - 1e-9) { break; }
 
 		// Clean stagnant canceled orders
 		if (resting->status == OrderStatus::CANCELED) {
@@ -112,6 +119,9 @@ unsigned int MatchingEngine::fillableFrom(const std::shared_ptr<Order>& order, c
 	const bool isLimit = (order->type == OrderType::LIMIT);
 	const Session session = this->OB.session;
 	if (!order->eligibleIn(session)) { return 0; }
+	if (this->OB.luld.paused) { return 0; }
+	const double upperBand = this->OB.luld.active ? this->OB.luld.upper : 0.0;
+	const double lowerBand = this->OB.luld.active ? this->OB.luld.lower : 0.0;
 
 	unsigned long long fillable = 0;
 	for (const std::shared_ptr<Order>& resting : opposite) {
@@ -119,6 +129,8 @@ unsigned int MatchingEngine::fillableFrom(const std::shared_ptr<Order>& order, c
 			bool crosses = isBid ? (resting->price <= order->price) : (resting->price >= order->price);
 			if (!crosses) { break; }
 		}
+		if (isBid && upperBand > 0.0 && resting->price > upperBand + 1e-9) { break; }
+		if (!isBid && lowerBand > 0.0 && resting->price < lowerBand - 1e-9) { break; }
 		if (resting->status == OrderStatus::CANCELED) { continue; }
 		if (!resting->eligibleIn(session)) { continue; }
 		if (resting->agentId == order->agentId) { break; } // match would be killed here

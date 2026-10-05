@@ -1,6 +1,7 @@
 #include "include/CoreSim.h"
 #include "include/Agent.h"
 #include "include/Account.h"
+#include "include/Luld.h"
 #include "include/Holding.h"
 #include "include/Enums.h"
 #include "include/Util.h"
@@ -159,6 +160,7 @@ void CoreSim::run(SimClock& clock) {
 		if (nextCallTime >= this->nextBoundaryMs) {
 			if (this->processSessionBoundaries(nextCallTime, clock)) { continue; }
 		}
+		this->endTradingPauseIfDue(nextCallTime, clock);
 
 		// Refresh who is in the market, participation drifts continuously off hours
 		if (nextCallTime >= this->nextParticipationSweepMs) {
@@ -563,6 +565,7 @@ bool CoreSim::pumpBackDataEvents(double targetMs, SimClock& clock, long long& ev
 		if (nextCallTime >= this->nextBoundaryMs) {
 			if (this->processSessionBoundaries(nextCallTime, clock)) { continue; }
 		}
+		this->endTradingPauseIfDue(nextCallTime, clock);
 
 		// Refresh who is in the market, participation drifts continuously off hours
 		if (nextCallTime >= this->nextParticipationSweepMs) {
@@ -714,6 +717,8 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 		// The closing cross, before anything expires at the close: a day order resting in the
 		// book takes part in it, then expires if it did not trade
 		if (endingSession == Session::REGULAR && this->OB.features.auctions.enabled) {
+			// The closing cross also ends any pause still running at 16:00
+			this->OB.luld.paused = false;
 			CrossResult cross = this->ME.runCross(TimeInForce::CLS, PrintKind::CLOSE_CROSS, this->OB.currentPrice);
 			this->OB.previousClose = this->OB.officialClose;
 			this->OB.officialClose = (cross.matched > 0) ? cross.price : this->OB.currentPrice;
@@ -722,6 +727,8 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 				this->onLog({ LogEntry::Kind::FILL, boundaryMs, "CLOSING CROSS " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
 			}
 		}
+		// Bands end with the regular session
+		if (endingSession == Session::REGULAR) { Luld::stop(this->OB); }
 		// Market makers borrow against their exempt shorts at the close...
 		if (endingSession == Session::REGULAR) { this->broker.borrowForFails(); }
 
@@ -742,6 +749,11 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 			if (this->onLog && cross.matched > 0) {
 				this->onLog({ LogEntry::Kind::FILL, boundaryMs, "OPENING CROSS " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
 			}
+		}
+		// Bands start from the opening price
+		if (this->OB.session == Session::REGULAR && this->OB.features.luld.enabled) {
+			double open = (this->OB.officialOpen > 0.0 && this->OB.features.auctions.enabled) ? this->OB.officialOpen : this->OB.currentPrice;
+			Luld::start(this->OB, open, boundaryMs);
 		}
 		// ...and whatever is still unborrowed by the next open is bought in then
 		if (this->OB.session == Session::REGULAR) {
@@ -785,6 +797,23 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 	}
 
 	return queueRebuilt;
+}
+void CoreSim::endTradingPauseIfDue(double upToMs, SimClock& clock) {
+	if (!this->OB.luld.paused || upToMs < this->OB.luld.pauseEndsMs) { return; }
+	double at = this->OB.luld.pauseEndsMs;
+	if (clock.simTimeMs < at) { clock.simTimeMs = at; }
+
+	// Everything that collected during the pause is uncrossed at one price, then the bands
+	// start again from it. No order carries a reopening time in force, so the cross is the
+	// book alone.
+	this->OB.luld.paused = false;
+	CrossResult cross = this->ME.runCross(TimeInForce::IOC, PrintKind::REOPEN_CROSS, this->OB.luld.reference);
+	Luld::start(this->OB, (cross.matched > 0) ? cross.price : this->OB.luld.reference, at);
+	++this->broker.stats.reopenings;
+	if (this->onLog) {
+		this->onLog({ LogEntry::Kind::HOLD, at, "LULD REOPEN " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
+	}
+	this->broker.processTriggers();
 }
 void CoreSim::skipToTime(double resumeAtMs, SimClock& clock) {
 	clock.simTimeMs = resumeAtMs;

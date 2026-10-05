@@ -150,6 +150,10 @@ struct BrokerStats {
 	long long ocoReductions = 0;
 	/* Bracket children grown because the entry filled some more */
 	long long bracketGrowths = 0;
+
+	// ---- LULD (OrderModelPlan Step 3.2) ----
+	long long tradingPauses = 0;
+	long long reopenings = 0;
 };
 
 /* Most rounds one pump of the trigger book may run before it stops and says so
@@ -231,6 +235,8 @@ public:
 	* under way.
 	*/
 	void processTriggers();
+	/* The pump itself, once the pause and re-entrancy checks have passed */
+	void runPump();
 	/* Charge every margin debit a day of interest, on a 360 day year, and re-check the accounts */
 	void accrueMarginInterest();
 	/* Charge every stock loan a day of borrow fee at today's utilisation, pay institutional
