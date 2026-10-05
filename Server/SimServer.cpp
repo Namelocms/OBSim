@@ -137,6 +137,13 @@ std::string SimServer::handleControl_(const Protocol::ControlMessage& msg) {
 		this->setParams(msg.params);
 		this->session_.restart(msg.params);
 		this->session_.requestBackfill(this->defaultBackfillTrades);
+		// Every client gets the new run's hello: parameters and switches changed, and a
+		// client still holding the old one would prefill its reset dialog and label its
+		// panels from a run that no longer exists
+		if (this->server_) {
+			const std::string hello = Protocol::encodeHello(msg.params, this->session_.config);
+			for (auto&& client : this->server_->getClients()) { client->sendText(hello); }
+		}
 		return Protocol::encodeAck("reset", msg.id);
 	default:
 		return Protocol::encodeError("unhandled command", msg.id);

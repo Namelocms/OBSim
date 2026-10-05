@@ -7,6 +7,9 @@
 #include "Order.h"
 #include "OrderBook.h"
 #include "Enums.h"
+#include "Account.h"
+#include "Broker.h"
+#include "MatchingEngine.h"
 
 // ============================================================
 //  Construction
@@ -32,6 +35,7 @@ void SimSession::start(const SimParams& params) {
 	this->sim_.setParameters(
 		params.seed, params.backDataDays, params.liveStartSession, params.minLiquidity,
 		params.agentCount, params.shareFloat, params.startPrice, params.transientFraction);
+	this->sim_.setFeatures(params.features);
 
 	// Reset everything derived from the previous run, or the first frame of the new one
 	// reports the old one's trades and log lines.
@@ -271,6 +275,7 @@ void SimSession::publish_() {
 
 	this->fillBook_(frame);
 	this->fillTrades_(frame);
+	this->fillMarket_(frame);
 	this->fulfilBackfill_();
 
 	// Spread comes from the aggregated book rather than Snapshot, so it agrees with the
@@ -430,6 +435,14 @@ void SimSession::fillAgents_(MarketFrame& frame) const {
 			row.subType = agent->subType;
 			row.isTransient = agent->isTransient;
 			row.isStranded = (agent->status == AgentStatus::LEAVING) && agent->isStranded(nowMs);
+			const double price = this->sim_.OB.currentPrice;
+			row.equity = Account::equity(*agent, price);
+			row.shortShares = agent->shortShares;
+			row.borrowedShares = agent->borrowedShares;
+			row.buyingPower = Account::buyingPower(*agent);
+			row.marginPrivileges = Account::hasMarginPrivileges(*agent);
+			row.inViolation = Account::inMaintenanceViolation(*agent, price);
+			row.heldOrders = (int)agent->heldOrders.size();
 			frame.agents.push_back(std::move(row));
 		}
 		};
@@ -439,4 +452,77 @@ void SimSession::fillAgents_(MarketFrame& frame) const {
 	append(transients, transientTake);
 
 	frame.agentsOmitted = total - (int)frame.agents.size();
+}
+
+void SimSession::fillMarket_(MarketFrame& frame) const {
+	const OrderBook& ob = this->sim_.OB;
+	const double now = this->clock_.simTimeMs;
+
+	FrameMarketState& m = frame.market;
+	m.luldActive = ob.luld.active;
+	m.luldLower = ob.luld.lower;
+	m.luldUpper = ob.luld.upper;
+	m.luldReference = ob.luld.reference;
+	m.limitState = ob.luld.limitStateSince >= 0.0;
+	m.paused = ob.luld.paused;
+	m.pauseEndsMs = ob.luld.pauseEndsMs;
+	m.ssrActive = ob.ssrActive(now);
+	m.ssrUntilMs = ob.ssrUntilMs;
+	m.ssrReferenceClose = ob.ssrReferenceClose;
+	m.officialOpen = ob.officialOpen;
+	m.officialClose = ob.officialClose;
+	m.previousClose = ob.previousClose;
+
+	// The next cross is worth showing while it is collecting: through the premarket for the
+	// open, and from the on-close cutoff for the close -- when the real venues publish theirs
+	if (ob.features.auctions.enabled) {
+		const int day = MarketCalendar::dayIndex(now);
+		const double close = MarketCalendar::sessionOpenMs(Session::REGULAR, day) + MarketCalendar::sessionLengthMs(Session::REGULAR);
+		const bool beforeOpen = (ob.session == Session::PREMARKET);
+		const bool beforeClose = (ob.session == Session::REGULAR)
+			&& now >= close - MarketCalendar::minutesToMs(CLOSE_ORDER_CUTOFF_MINUTES);
+		if (beforeOpen || beforeClose) {
+			const TimeInForce which = beforeOpen ? TimeInForce::OPG : TimeInForce::CLS;
+			CrossResult cross = this->sim_.ME.indicativeCross(which, ob.currentPrice);
+			m.auctionCollecting = true;
+			m.auctionIsOpen = beforeOpen;
+			m.indicativePrice = cross.price;
+			m.indicativeMatched = cross.matched;
+			m.imbalance = cross.imbalance;
+			m.imbalanceSide = cross.imbalanceSide;
+			int queued = 0;
+			for (const auto& o : ob.auctionOrders) { if (o->tif == which) { ++queued; } }
+			m.auctionOrders = queued;
+		}
+	}
+
+	FrameLending& l = frame.lending;
+	l.supply = ob.lending.supply();
+	l.borrowed = ob.lending.borrowed;
+	l.utilisation = ob.lending.utilisation();
+	l.feeRate = StockLoan::feeRate(l.utilisation);
+	unsigned long long shortInterest = 0;
+	for (const auto& kv : ob.agents) { if (kv.second != nullptr) { shortInterest += kv.second->shortShares; } }
+	l.shortInterest = shortInterest;
+
+	FrameHouse& h = frame.house;
+	h.commissions = ob.ledger.commissions;
+	h.exchangeFees = ob.ledger.exchangeFees;
+	h.regulatoryFees = ob.ledger.regulatoryFees;
+	h.marginInterest = ob.ledger.marginInterest;
+	h.borrowFees = ob.ledger.borrowFees;
+	h.brokerLosses = ob.ledger.brokerLosses;
+
+	const BrokerStats& st = this->sim_.broker.stats;
+	FrameBrokerCounts& b = frame.broker;
+	b.marginCalls = st.marginCalls;
+	b.writeOffs = st.writeOffs;
+	b.stopsTriggered = st.stopsTriggered;
+	b.cascades = st.cascadePumps;
+	b.deepestCascade = st.maxStopsInOnePump;
+	b.recalledShares = st.recalledShares;
+	b.buyIns = st.buyInOrders;
+	b.brackets = st.groupsCreated;
+	b.tradingPauses = st.tradingPauses;
+	b.ssrTriggers = ob.ssrTriggers;
 }

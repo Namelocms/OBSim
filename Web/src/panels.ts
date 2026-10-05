@@ -1,4 +1,7 @@
-import type { AgentRow, Frame, Hello, SimParams } from './protocol';
+import { DEFAULT_FEATURES } from './features';
+import { fmt } from './format';
+import type { AgentRow, Frame, Hello, ResetParams, SimParams } from './protocol';
+import { rosterColumns, type RosterColumn } from './roster-columns';
 
 /* The DOM panels: header, agent roster, event log, controls, reset dialog, back-data
  * overlay. No framework -- these update a handful of text nodes at 30 frames a second,
@@ -19,26 +22,6 @@ function el<K extends keyof HTMLElementTagNameMap>(
   if (text !== undefined) node.textContent = text;
   return node;
 }
-
-const fmt = {
-  price: (v: number) => v.toFixed(4),
-  money: (v: number) =>
-    Math.abs(v) >= 1e6 ? `$${(v / 1e6).toFixed(2)}M`
-      : Math.abs(v) >= 1e3 ? `$${(v / 1e3).toFixed(1)}k`
-        : `$${v.toFixed(2)}`,
-  int: (v: number) => v.toLocaleString('en-US'),
-  pct: (v: number) => `${(v * 100).toFixed(1)}%`,
-  /** Sim time as the market clock it represents: t = 0 is 04:00 on day 0 */
-  clock: (simTimeMs: number) => {
-    const totalMin = simTimeMs / 60000;
-    const day = Math.floor(totalMin / 1440);
-    const intoDay = totalMin - day * 1440;
-    const mins = Math.floor((intoDay + 240) % 1440);
-    const hh = String(Math.floor(mins / 60)).padStart(2, '0');
-    const mm = String(Math.floor(mins % 60)).padStart(2, '0');
-    return `D${day + 1} ${hh}:${mm}`;
-  },
-};
 
 // ---------------------------------------------------------------- header
 
@@ -113,6 +96,7 @@ export class AgentTable {
   private rows: AgentRow[] = [];
   private omitted = 0;
   private filter = '';
+  private columns: readonly RosterColumn[] = [];
 
   constructor() {
     const head = el('div', 'panel-head');
@@ -126,6 +110,14 @@ export class AgentTable {
     });
     head.append(search);
     this.root.append(head, this.body);
+    this.setColumns(rosterColumns(DEFAULT_FEATURES));
+  }
+
+  /** Which columns to draw, normally rosterColumns() of the run's switches */
+  setColumns(columns: readonly RosterColumn[]): void {
+    this.columns = columns;
+    this.root.style.setProperty('--roster-cols', columns.map((c) => c.width).join(' '));
+    this.render();
   }
 
   /** Only called when a frame actually carries a roster. An absent roster means
@@ -155,28 +147,19 @@ export class AgentTable {
     // is affordable -- it is the reason the roster has its own cadence at all.
     const frag = document.createDocumentFragment();
     const header = el('div', 'agent-row agent-head');
-    for (const [label, cls] of [
-      ['ID', 'c-id'], ['TYPE', 'c-type'], ['CASH', 'c-num'], ['HELD', 'c-num'],
-      ['BID', 'c-num'], ['ASK', 'c-num'], ['SENT', 'c-num'], ['ST', 'c-status'],
-    ] as const) {
-      header.append(el('span', cls, label));
+    for (const c of this.columns) {
+      const cell = el('span', c.cls, c.label);
+      if (c.title) cell.title = c.title;
+      header.append(cell);
     }
     frag.append(header);
 
     for (const r of matches) {
       const row = el('div', `agent-row${r.transient ? ' transient' : ''}`);
-      row.append(el('span', 'c-id', (r.transient ? '~' : '') + r.id.replace(/^A-0+/, 'A-')));
-      row.append(el('span', 'c-type', `${r.type[0]}/${r.subType.slice(0, 4)}`));
-      row.append(el('span', 'c-num', fmt.money(r.cash)));
-      row.append(el('span', 'c-num', fmt.int(r.holdings)));
-      row.append(el('span', 'c-num', String(r.bids)));
-      row.append(el('span', 'c-num', String(r.asks)));
-      const sent = el('span', 'c-num', r.sentiment.toFixed(2));
-      if (r.sentiment > 0.05) sent.classList.add('up');
-      else if (r.sentiment < -0.05) sent.classList.add('down');
-      row.append(sent);
-      const status = r.stranded ? 'STK' : r.status.slice(0, 3);
-      row.append(el('span', `c-status st-${status.toLowerCase()}`, status));
+      for (const c of this.columns) {
+        const tone = c.tone?.(r);
+        row.append(el('span', tone ? `${c.cls} ${tone}` : c.cls, c.text(r)));
+      }
       frag.append(row);
     }
 
@@ -186,16 +169,27 @@ export class AgentTable {
 
 // ---------------------------------------------------------------- log
 
+/** The market's and the brokers' events, as opposed to the agents' routine ones */
+const NOTABLE_KINDS = new Set(['ALERT', 'RISK', 'STOP', 'ERROR']);
+
 export class EventLog {
   readonly root = el('div', 'panel log');
   private body = el('div', 'log-body');
   private title = el('span', 'panel-title', 'Event log');
   private dropped = 0;
   private pinned = true;
+  private eventsOnly = false;
+  private eventsButton = el('button', 'btn btn-narrow log-filter', 'events only');
 
   constructor(private cap = 300) {
     const head = el('div', 'panel-head');
     head.append(this.title);
+    // At speed the routine lines turn the whole buffer over in under a second, so a margin
+    // call is gone before it can be read. Filtering at append time, not in CSS, is what
+    // lets the buffer hold the events instead.
+    this.eventsButton.title = 'Show only crosses, pauses, restrictions, margin calls, recalls and stops';
+    this.eventsButton.addEventListener('click', () => this.setEventsOnly(!this.eventsOnly));
+    head.append(this.eventsButton);
     head.append(el('span', 'panel-note', 'newest last'));
     this.root.append(head, this.body);
 
@@ -212,6 +206,7 @@ export class EventLog {
     if (lines.length > 0) {
       const frag = document.createDocumentFragment();
       for (const [simTimeMs, kind, text] of lines) {
+        if (this.eventsOnly && !NOTABLE_KINDS.has(kind)) continue;
         const row = el('div', `log-line kind-${kind.toLowerCase()}`);
         row.append(el('span', 'log-time', fmt.clock(simTimeMs)));
         row.append(el('span', 'log-kind', kind));
@@ -228,6 +223,16 @@ export class EventLog {
     this.title.textContent = this.dropped > 0
       ? `Event log (${fmt.int(this.dropped)} dropped)`
       : 'Event log';
+  }
+
+  setEventsOnly(on: boolean): void {
+    this.eventsOnly = on;
+    this.eventsButton.classList.toggle('active', on);
+    if (!on) return;
+    for (const row of [...this.body.children]) {
+      const kind = row.querySelector('.log-kind')?.textContent ?? '';
+      if (!NOTABLE_KINDS.has(kind)) row.remove();
+    }
   }
 
   clear(): void {
@@ -330,8 +335,11 @@ export class ResetDialog {
   private inputs = new Map<keyof SimParams, HTMLInputElement | HTMLSelectElement>();
   private derivedNote = el('div', 'dialog-note');
 
-  constructor(private onSubmit: (params: Partial<SimParams>) => void) {
-    const box = el('div', 'dialog');
+  private box = el('div', 'dialog');
+  private buttons = el('div', 'dialog-buttons');
+
+  constructor(private onSubmit: (params: ResetParams) => void) {
+    const box = this.box;
     box.append(el('h2', 'dialog-title', 'Reset simulation'));
 
     const fields: Array<[keyof SimParams, string, string, string]> = [
@@ -384,7 +392,7 @@ export class ResetDialog {
     agentInput?.addEventListener('input', updateNote);
     updateNote();
 
-    const buttons = el('div', 'dialog-buttons');
+    const buttons = this.buttons;
     const cancel = el('button', 'btn', 'Cancel');
     cancel.addEventListener('click', () => this.hide());
     const go = el('button', 'btn btn-primary', 'Go');
@@ -398,8 +406,14 @@ export class ResetDialog {
     });
   }
 
+  /** Add a section the dialog does not own, above its buttons. Whoever mounts it fills it
+   *  before showFrom and reads it in onSubmit. */
+  mount(section: HTMLElement): void {
+    this.box.insertBefore(section, this.buttons);
+  }
+
   private submit(): void {
-    const params: Partial<SimParams> = {};
+    const params: ResetParams = {};
     for (const [key, input] of this.inputs) {
       if (key === 'liveStartSession') {
         params.liveStartSession = input.value as SimParams['liveStartSession'];

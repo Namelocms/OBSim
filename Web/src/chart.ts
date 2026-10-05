@@ -94,6 +94,11 @@ export class PriceChart {
     this.resizeObserver.observe(container);
   }
 
+  /** The candles, for whatever draws on them (chart-overlays.ts) */
+  get priceSeries(): ISeriesApi<'Candlestick'> {
+    return this.candles;
+  }
+
   /** Replace the whole series. Used for backfill and on a timeframe change. */
   setAll(bars: readonly Bar[]): void {
     this.candles.setData(

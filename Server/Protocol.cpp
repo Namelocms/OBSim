@@ -56,14 +56,47 @@ const char* logKindName(LogEntry::Kind k) {
 	case LogEntry::Kind::FILL:   return "FILL";
 	case LogEntry::Kind::PLACE:  return "PLACE";
 	case LogEntry::Kind::CANCEL: return "CANCEL";
+	case LogEntry::Kind::ALERT:  return "ALERT";
+	case LogEntry::Kind::RISK:   return "RISK";
+	case LogEntry::Kind::STOP:   return "STOP";
 	default:                     return "HOLD";
 	}
 }
 
-/* A trade print as [epochSec, price, volume, side]
+/* One character per print kind, the most repeated field after the side */
+const char* printKindCode(PrintKind k) {
+	switch (k) {
+	case PrintKind::OPEN_CROSS:   return "O";
+	case PrintKind::CLOSE_CROSS:  return "C";
+	case PrintKind::REOPEN_CROSS: return "R";
+	default:                      return "T";
+	}
+}
+
+/* The order model switches, as the wire names them (OrderModelPlan Step 4.1) */
+json featuresJson(const Features& f) {
+	return {
+		{ "agentReplace",           f.agentReplace },
+		{ "adversityFromEntry",     f.adversityFromEntry },
+		{ "agentBrackets",          f.agentBrackets },
+		{ "agentPostOnly",          f.agentPostOnly },
+		{ "fees",                   f.fees.enabled },
+		{ "margin",                 f.margin.enabled },
+		{ "shorting",               f.shorting.enabled },
+		{ "stopsExtendedHours",     f.stops.extendedHours },
+		{ "auctions",               f.auctions.enabled },
+		{ "regularOnlyAgentOrders", f.auctions.regularOnlyAgentOrders },
+		{ "luld",                   f.luld.enabled },
+		{ "luldTier",               f.luld.tier },
+	};
+}
+
+/* A trade print as [epochSec, price, volume, side, kind]
 *
 * Side is "B" when a buyer crossed and "S" when a seller did -- one character because this
-* is the most repeated field on the wire.
+* is the most repeated field on the wire. Kind is "T" for continuous trading, "O" / "C" for
+* the opening and closing crosses and "R" for a reopening after a pause; a cross's side is
+* the side of its imbalance.
 */
 json printTuple(const TradePrint& t) {
 	return json::array({
@@ -71,6 +104,7 @@ json printTuple(const TradePrint& t) {
 		t.price,
 		t.volume,
 		(t.aggressor == OrderAction::BID) ? "B" : "S",
+		printKindCode(t.kind),
 		});
 }
 
@@ -108,6 +142,7 @@ std::string encodeHello(const SimParams& params, const SimSessionConfig& config)
 		{ "shareFloat",        params.shareFloat },
 		{ "startPrice",        params.startPrice },
 		{ "transientFraction", params.transientFraction },
+		{ "features",          featuresJson(params.features) },
 	};
 	j["config"] = {
 		{ "framesPerSecond",    config.framesPerSecond },
@@ -120,7 +155,7 @@ std::string encodeHello(const SimParams& params, const SimSessionConfig& config)
 	// silently reading the wrong column if one ever changes.
 	j["tuples"] = {
 		{ "bookLevel", json::array({ "price", "volume", "orders" }) },
-		{ "print",     json::array({ "epochSec", "price", "volume", "side" }) },
+		{ "print",     json::array({ "epochSec", "price", "volume", "side", "kind" }) },
 		{ "log",       json::array({ "simTimeMs", "kind", "text" }) },
 	};
 	return j.dump();
@@ -166,6 +201,38 @@ std::string encodeFrame(const MarketFrame& f) {
 	j["prints"] = std::move(prints);
 	j["printsDropped"] = f.tradesDropped;
 
+	// Market structure, lending, the house and the broker (OrderModelPlan Step 4.1). Always
+	// present, small, and a client draws only the parts its switches make meaningful.
+	const FrameMarketState& m = f.market;
+	j["market"] = {
+		{ "luld", {
+			{ "active", m.luldActive }, { "lower", m.luldLower }, { "upper", m.luldUpper },
+			{ "reference", m.luldReference }, { "limitState", m.limitState } } },
+		{ "pause", { { "paused", m.paused }, { "endsMs", m.pauseEndsMs } } },
+		{ "ssr", { { "active", m.ssrActive }, { "untilMs", m.ssrUntilMs }, { "referenceClose", m.ssrReferenceClose } } },
+		{ "official", { { "open", m.officialOpen }, { "close", m.officialClose }, { "previousClose", m.previousClose } } },
+		{ "auction", {
+			{ "collecting", m.auctionCollecting }, { "cross", m.auctionIsOpen ? "OPEN" : "CLOSE" },
+			{ "price", m.indicativePrice }, { "matched", m.indicativeMatched }, { "imbalance", m.imbalance },
+			{ "side", (m.imbalanceSide == OrderAction::BID) ? "B" : "S" }, { "orders", m.auctionOrders } } },
+	};
+	j["lending"] = {
+		{ "supply", f.lending.supply }, { "borrowed", f.lending.borrowed }, { "utilisation", f.lending.utilisation },
+		{ "feeRate", f.lending.feeRate }, { "shortInterest", f.lending.shortInterest },
+	};
+	j["house"] = {
+		{ "commissions", f.house.commissions }, { "exchangeFees", f.house.exchangeFees },
+		{ "regulatoryFees", f.house.regulatoryFees }, { "marginInterest", f.house.marginInterest },
+		{ "borrowFees", f.house.borrowFees }, { "brokerLosses", f.house.brokerLosses },
+	};
+	j["broker"] = {
+		{ "marginCalls", f.broker.marginCalls }, { "writeOffs", f.broker.writeOffs },
+		{ "stopsTriggered", f.broker.stopsTriggered }, { "cascades", f.broker.cascades },
+		{ "deepestCascade", f.broker.deepestCascade }, { "recalledShares", f.broker.recalledShares },
+		{ "buyIns", f.broker.buyIns }, { "brackets", f.broker.brackets },
+		{ "tradingPauses", f.broker.tradingPauses }, { "ssrTriggers", f.broker.ssrTriggers },
+	};
+
 	json logs = json::array();
 	for (const FrameLogLine& l : f.logs) {
 		logs.push_back(json::array({ l.simTimeMs, logKindName(l.kind), l.text }));
@@ -190,6 +257,13 @@ std::string encodeFrame(const MarketFrame& f) {
 				{ "subType",   subTypeName(r.subType) },
 				{ "transient", r.isTransient },
 				{ "stranded",  r.isStranded },
+				{ "equity",    r.equity },
+				{ "short",     r.shortShares },
+				{ "borrowed",  r.borrowedShares },
+				{ "buyingPower", r.buyingPower },
+				{ "margin",    r.marginPrivileges },
+				{ "violation", r.inViolation },
+				{ "held",      r.heldOrders },
 				});
 		}
 		j["agents"] = { { "rows", std::move(rows) }, { "omitted", f.agentsOmitted } };
@@ -331,6 +405,33 @@ ControlMessage decodeControl(const std::string& text) {
 			if (!sessionFromName(p["liveStartSession"].get<std::string>(), out.liveStartSession)) {
 				msg.error = "unknown liveStartSession";
 				return msg;
+			}
+		}
+		// The order model switches. Unknown keys are ignored, so a newer client can talk to
+		// an older server; a known key of the wrong type is an error, not a silent default.
+		if (p.contains("features")) {
+			const json& fj = p["features"];
+			if (!fj.is_object()) { msg.error = "features must be an object"; return msg; }
+			Features& f = out.features;
+			struct Flag { const char* key; bool* target; };
+			const Flag flags[] = {
+				{ "agentReplace", &f.agentReplace }, { "adversityFromEntry", &f.adversityFromEntry },
+				{ "agentBrackets", &f.agentBrackets }, { "agentPostOnly", &f.agentPostOnly },
+				{ "fees", &f.fees.enabled }, { "margin", &f.margin.enabled }, { "shorting", &f.shorting.enabled },
+				{ "stopsExtendedHours", &f.stops.extendedHours }, { "auctions", &f.auctions.enabled },
+				{ "regularOnlyAgentOrders", &f.auctions.regularOnlyAgentOrders }, { "luld", &f.luld.enabled },
+			};
+			for (const Flag& flag : flags) {
+				if (!fj.contains(flag.key)) { continue; }
+				if (!fj[flag.key].is_boolean()) { msg.error = std::string("features.") + flag.key + " must be true or false"; return msg; }
+				*flag.target = fj[flag.key].get<bool>();
+			}
+			if (fj.contains("luldTier")) {
+				if (!fj["luldTier"].is_number_integer()) { msg.error = "features.luldTier must be 1 or 2"; return msg; }
+				// Read wide: get<int> would truncate 4294967297 to 1 and accept it
+				long long tier = fj["luldTier"].get<long long>();
+				if (tier != 1 && tier != 2) { msg.error = "features.luldTier must be 1 or 2"; return msg; }
+				f.luld.tier = (int)tier;
 			}
 		}
 		if (!(out.startPrice > 0.0)) { msg.error = "startPrice must be positive"; return msg; }

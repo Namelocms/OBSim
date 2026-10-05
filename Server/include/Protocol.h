@@ -15,7 +15,7 @@
 * across versions.
 *
 * REPEATED DATA IS SENT AS TUPLES, NOT OBJECTS. A book level is [price, volume, orders]
-* and a trade print is [epochSec, price, volume, side]. Twenty levels a side at 30 frames
+* and a trade print is [epochSec, price, volume, side, kind]. Twenty levels a side at 30 frames
 * a second makes the difference between a key name repeated 1,200 times a second and not.
 * The orders are fixed and documented here; treat them as part of the contract.
 *

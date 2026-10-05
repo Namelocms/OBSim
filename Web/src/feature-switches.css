@@ -1,0 +1,53 @@
+/* The order model switches. Only the app's colour tokens are shared; everything else is
+   scoped under .feature-switches so the section can be mounted anywhere. */
+
+.feature-switches {
+  margin: 14px 0 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.fs-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.fs-title { color: var(--accent); font-size: 12px; letter-spacing: 0.04em; margin-right: auto; }
+
+.fs-quick {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font: 10px var(--mono);
+  padding: 1px 7px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.fs-quick:hover { color: var(--text); border-color: var(--accent); }
+
+.fs-group { margin-top: 8px; }
+.fs-group-title { font-size: 9px; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 3px; }
+
+.fs-row {
+  display: grid;
+  grid-template-columns: 16px 150px minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 6px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.fs-row input { margin: 0; align-self: center; }
+.fs-label { font-size: 11px; color: var(--text); }
+.fs-hint { font-size: 10px; color: var(--muted); line-height: 1.35; }
+.fs-stranded .fs-label, .fs-stranded .fs-hint { opacity: 0.45; }
+
+.fs-sub { grid-template-columns: 16px 150px minmax(0, 1fr); }
+.fs-sub .fs-label { grid-column: 2; color: var(--muted); }
+
+.fs-select {
+  grid-column: 3;
+  background: #0b1016;
+  border: 1px solid var(--line);
+  color: var(--text);
+  font: 11px var(--mono);
+  padding: 2px 4px;
+  border-radius: 3px;
+  min-width: 0;
+}
+.fs-select:disabled { opacity: 0.45; }

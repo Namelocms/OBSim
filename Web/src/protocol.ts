@@ -1,8 +1,8 @@
 /* The wire protocol, as TypeScript types.
  *
  * Mirrors Server/include/Protocol.h. Repeated data arrives as TUPLES, not objects --
- * [price, volume, orders] for a book level, [epochSec, price, volume, side] for a trade
- * print. `hello` carries the layouts so this file can assert it still agrees with the
+ * [price, volume, orders] for a book level, [epochSec, price, volume, side, kind] for a
+ * trade print. `hello` carries the layouts so this file can assert it still agrees with the
  * server rather than reading the wrong column if one ever changes.
  *
  * Two times are sent for every frame. `simTimeMs` is authoritative; `epochSec` is derived
@@ -12,11 +12,13 @@
 export const PROTOCOL_VERSION = 1;
 
 export type Side = 'B' | 'S';
+/** T continuous trading, O opening cross, C closing cross, R reopening after a pause */
+export type PrintKind = 'T' | 'O' | 'C' | 'R';
 
 /** [price, volume, orders] */
 export type BookLevelTuple = [number, number, number];
-/** [epochSec, price, volume, side] */
-export type PrintTuple = [number, number, number, Side];
+/** [epochSec, price, volume, side, kind] -- a cross's side is the side of its imbalance */
+export type PrintTuple = [number, number, number, Side, PrintKind];
 /** [simTimeMs, kind, text] */
 export type LogTuple = [number, string, string];
 
@@ -53,6 +55,27 @@ export interface SimParams {
   shareFloat: number;
   startPrice: number;
   transientFraction: number;
+  /** The order model's switches, all off by default. See features.ts for what each does. */
+  features: Features;
+}
+
+/** What a reset may set. Anything left out keeps the server's current value. */
+export type ResetParams = Partial<Omit<SimParams, 'features'>> & { features?: Partial<Features> };
+
+/** Mirrors Core/include/Features.h, under the names the wire uses */
+export interface Features {
+  agentReplace: boolean;
+  adversityFromEntry: boolean;
+  agentBrackets: boolean;
+  agentPostOnly: boolean;
+  fees: boolean;
+  margin: boolean;
+  shorting: boolean;
+  stopsExtendedHours: boolean;
+  auctions: boolean;
+  regularOnlyAgentOrders: boolean;
+  luld: boolean;
+  luldTier: 1 | 2;
 }
 
 export type SessionName = 'PREMARKET' | 'REGULAR' | 'AFTERHOURS' | 'OVERNIGHT' | 'CLOSED';
@@ -69,6 +92,48 @@ export interface AgentRow {
   subType: 'NOISE' | 'MOMENTUM' | 'ALGO' | 'INFORMED';
   transient: boolean;
   stranded: boolean;
+  /** Worth at the last price: cash, escrow and long shares, less shares owed */
+  equity: number;
+  /** Shares sold short and still owed, and how many of those are on loan */
+  short: number;
+  borrowed: number;
+  buyingPower: number;
+  /** Has the equity to borrow under the margin rules */
+  margin: boolean;
+  /** Below its maintenance requirement right now */
+  violation: boolean;
+  /** Stops and other orders the broker is holding for it */
+  held: number;
+}
+
+/** The market's structure rather than its price */
+export interface MarketState {
+  luld: { active: boolean; lower: number; upper: number; reference: number; limitState: boolean };
+  pause: { paused: boolean; endsMs: number };
+  ssr: { active: boolean; untilMs: number; referenceClose: number };
+  official: { open: number; close: number; previousClose: number };
+  /** The next cross, while it collects: through the premarket, and after the 15:50 cutoff */
+  auction: {
+    collecting: boolean; cross: 'OPEN' | 'CLOSE'; price: number; matched: number;
+    imbalance: number; side: Side; orders: number;
+  };
+}
+
+export interface LendingState {
+  supply: number; borrowed: number; utilisation: number; feeRate: number; shortInterest: number;
+}
+
+/** The ledger's house accounts */
+export interface HouseState {
+  commissions: number; exchangeFees: number; regulatoryFees: number;
+  marginInterest: number; borrowFees: number; brokerLosses: number;
+}
+
+/** What the broker has done over the run */
+export interface BrokerCounts {
+  marginCalls: number; writeOffs: number; stopsTriggered: number; cascades: number;
+  deepestCascade: number; recalledShares: number; buyIns: number; brackets: number;
+  tradingPauses: number; ssrTriggers: number;
 }
 
 export interface BackDataProgress {
@@ -111,6 +176,10 @@ export interface Frame {
   book: { bids: BookLevelTuple[]; asks: BookLevelTuple[] };
   prints: PrintTuple[];
   printsDropped: number;
+  market: MarketState;
+  lending: LendingState;
+  house: HouseState;
+  broker: BrokerCounts;
   logs: LogTuple[];
   logsDropped: number;
   /* ABSENT means "roster unchanged, keep what you have". An empty rows array would mean
@@ -141,14 +210,14 @@ export type ClientMessage =
   | { type: 'sentiment'; value: number; id?: string }
   | { type: 'sentimentNudge'; delta: number; id?: string }
   | { type: 'backfill'; limit?: number; id?: string }
-  | { type: 'reset'; params: Partial<SimParams>; id?: string };
+  | { type: 'reset'; params: ResetParams; id?: string };
 
 /* The tuple layouts this client was written against. Checked against `hello` on connect:
  * a server that reorders a tuple would otherwise be read silently and wrongly, which is
  * exactly the failure a version number alone does not catch. */
 export const EXPECTED_TUPLES: Record<string, string[]> = {
   bookLevel: ['price', 'volume', 'orders'],
-  print: ['epochSec', 'price', 'volume', 'side'],
+  print: ['epochSec', 'price', 'volume', 'side', 'kind'],
   log: ['simTimeMs', 'kind', 'text'],
 };
 

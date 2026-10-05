@@ -1,0 +1,53 @@
+/* Status chips. Scoped to their own classes, sharing only the app's colour tokens, so the
+   strip or the panel can be placed anywhere in a layout. */
+
+.status-strip {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  padding: 5px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.status-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.status-strip.hidden, .status-panel.hidden { display: none; }
+
+.ms-head {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.ms-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 4px 14px;
+  padding: 6px 10px;
+}
+
+.ms-chip { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.ms-chip[hidden] { display: none; }
+.ms-grid .ms-chip { flex-direction: column; gap: 0; }
+
+.ms-label { font-size: 9px; color: var(--muted); letter-spacing: 0.1em; white-space: nowrap; }
+.ms-value { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+.ms-up .ms-value { color: var(--up); }
+.ms-down .ms-value { color: var(--down); }
+.ms-warn .ms-value { color: var(--warn); }
+.ms-alert { background: rgba(214, 69, 69, 0.16); border-radius: 3px; padding: 0 6px; }
+.ms-alert .ms-label { color: var(--down); }
+.ms-alert .ms-value { color: #ff8a8a; font-weight: 700; }

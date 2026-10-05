@@ -40,6 +40,8 @@ struct SimParams {
 	double startPrice = 1.00;
 	/* MEDIAN transient share of the resident population, 0 disables the whole path */
 	double transientFraction = 0.0;
+	/* Which order model mechanisms the run uses, all off by default (OrderModelPlan) */
+	Features features;
 };
 
 struct SimSessionConfig {
@@ -157,6 +159,8 @@ private:
 	void fillAgents_(MarketFrame& frame) const;
 	/* Move trades executed since the last frame into it, flagging any that were lost */
 	void fillTrades_(MarketFrame& frame);
+	/* Market structure, lending, the ledger and the broker's counts */
+	void fillMarket_(MarketFrame& frame) const;
 	/* Serve any outstanding backfill request. Sim thread only. */
 	void fulfilBackfill_();
 

@@ -26,13 +26,20 @@ body {
   overflow: hidden;
 }
 
+/* A column of rows, not a grid of fixed tracks: a row that hides itself (the status strip,
+   with every switch off) takes no space and leaves no gap, and rows can be added or moved
+   without renumbering anything */
 #app {
-  display: grid;
-  grid-template-rows: auto minmax(0, 3fr) minmax(0, 2fr) auto;
+  display: flex;
+  flex-direction: column;
   gap: 6px;
   height: 100vh;
   padding: 6px;
 }
+
+#app > .header, #app > .controls { flex: 0 0 auto; }
+#app > .upper { flex: 3 1 0; }
+#app > .lower { flex: 2 1 0; }
 
 /* ---- header ---- */
 
@@ -72,6 +79,10 @@ body {
 .row { display: grid; gap: 6px; min-height: 0; }
 .upper { grid-template-columns: minmax(0, 1fr) 320px; }
 .lower { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+
+/* Panels stacked in one cell: the last one takes what the others leave */
+.stack { display: flex; flex-direction: column; gap: 6px; min-height: 0; min-width: 0; }
+.stack > :last-child { flex: 1 1 0; }
 
 .panel {
   display: flex;
@@ -117,7 +128,8 @@ body {
 
 .agent-row {
   display: grid;
-  grid-template-columns: 1.6fr 1fr 1fr 0.8fr 0.6fr 0.6fr 0.7fr 0.6fr;
+  /* Set from the column list (roster-columns.ts); the fallback is the switches-off roster */
+  grid-template-columns: var(--roster-cols, 1.6fr 1fr 1fr 0.8fr 0.6fr 0.6fr 0.7fr 0.6fr);
   gap: 6px;
   padding: 2px 10px;
   font-variant-numeric: tabular-nums;
@@ -135,15 +147,21 @@ body {
 .st-bnk { color: var(--down); }
 .st-lvg { color: var(--warn); }
 .st-stk { color: #c07ad6; }
+.st-mgn { color: var(--accent); }
 
 /* ---- log ---- */
 
 .log-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 0; }
+.log-filter { margin-left: auto; font-size: 10px; padding: 1px 7px; }
+.log-filter + .panel-note { margin-left: 0; }
 .log-line { display: grid; grid-template-columns: 76px 56px 1fr; gap: 8px; padding: 1px 10px; }
 .log-time { color: var(--muted); }
 .log-kind { color: var(--accent); font-size: 10px; }
 .log-text { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
 .kind-cancel .log-kind { color: var(--warn); }
+.kind-alert .log-kind, .kind-alert .log-text { color: var(--warn); }
+.kind-risk .log-kind, .kind-risk .log-text { color: #ff8a8a; }
+.kind-stop .log-kind { color: #c07ad6; }
 .kind-error .log-kind, .kind-error .log-text { color: var(--down); }
 
 /* ---- controls ---- */
@@ -232,5 +250,5 @@ body {
 
 @media (max-width: 1100px) {
   .upper { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 2fr) minmax(0, 1fr); }
-  .lower { grid-template-columns: minmax(0, 1fr); }
+  .lower { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
 }

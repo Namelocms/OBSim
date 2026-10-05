@@ -2,19 +2,27 @@ import './style.css';
 
 import { BarSeries, TIMEFRAMES } from './bars';
 import { PriceChart } from './chart';
+import { ChartOverlays } from './chart-overlays';
 import { Connection, type ConnectionState } from './connection';
+import { FeatureSwitches } from './feature-switches';
+import { countOn, withDefaults } from './features';
 import { DepthLadder } from './ladder';
+import { BROKER_CHIPS, MARKET_CHIPS, StatusStrip } from './market-status';
 import {
   AgentTable, BackDataOverlay, Controls, EventLog, Header, ResetDialog,
 } from './panels';
-import { checkTuples, type Frame, type Hello, type ServerMessage } from './protocol';
+import { checkTuples, type Features, type Frame, type Hello, type ServerMessage } from './protocol';
+import { rosterColumns } from './roster-columns';
 
 /* Wiring.
  *
- * One connection, one bar series, six panels. The only real subtlety is that frames are
+ * One connection, one bar series, and the panels. The only real subtlety is that frames are
  * applied as they arrive rather than on an animation frame: the server has already
  * coalesced to ~30/s against the wall clock, so re-coalescing here would add latency to
  * fix a problem that was solved upstream.
+ *
+ * This file is the only one that knows the layout. Every panel is a self-contained module
+ * with a root element and an update method, so moving one is an edit here and nowhere else.
  */
 
 const DEFAULT_URL = `ws://${location.hostname || '127.0.0.1'}:8787`;
@@ -59,18 +67,28 @@ ladderPanel.append(ladderHead, ladderBody);
 
 const agents = new AgentTable();
 const log = new EventLog();
+// The order model's state: the market's structure in a row under the header, the brokers'
+// activity in a panel over the log. Both hide themselves while nothing is switched on.
+const marketStatus = new StatusStrip(MARKET_CHIPS);
+const brokerStatus = new StatusStrip(BROKER_CHIPS, { title: 'Brokers' });
+const switches = new FeatureSwitches();
 
 const upper = document.createElement('div');
 upper.className = 'row upper';
 upper.append(chartPanel, ladderPanel);
 
+const side = document.createElement('div');
+side.className = 'stack';
+side.append(brokerStatus.root, log.root);
+
 const lower = document.createElement('div');
 lower.className = 'row lower';
-lower.append(agents.root, log.root);
+lower.append(agents.root, side);
 
 // ---- state -----------------------------------------------------------------
 
 let hello: Hello | null = null;
+let features: Features = withDefaults();
 let timeframeIndex = 3; // 1m
 const bars = new BarSeries(TIMEFRAMES[timeframeIndex] ?? TIMEFRAMES[0]!);
 let lastFrame: Frame | null = null;
@@ -78,6 +96,7 @@ let seenSequence = 0;
 let gapCount = 0;
 
 const chart = new PriceChart(chartBody);
+const overlays = new ChartOverlays(chart.priceSeries, TIMEFRAMES[timeframeIndex] ?? TIMEFRAMES[0]!);
 const ladder = new DepthLadder(ladderBody);
 
 const controls = new Controls(
@@ -87,7 +106,7 @@ const controls = new Controls(
     onSpeed: (value) => connection.send({ type: 'speed', value }),
     onSentiment: (delta) => connection.send({ type: 'sentimentNudge', delta }),
     onTimeframe: (index) => setTimeframe(index),
-    onReset: () => resetDialog.showFrom(hello),
+    onReset: () => openReset(),
   },
   TIMEFRAMES.map((t) => t.label),
 );
@@ -96,18 +115,28 @@ const resetDialog = new ResetDialog((params) => {
   // The engine restarts from t = 0, so everything drawn from the old run must go
   bars.reset(TIMEFRAMES[timeframeIndex] ?? TIMEFRAMES[0]!);
   chart.clear();
+  overlays.clear();
   log.clear();
+  marketStatus.clear();
+  brokerStatus.clear();
   seenSequence = 0;
   gapCount = 0;
-  connection.send({ type: 'reset', params });
+  connection.send({ type: 'reset', params: { ...params, features: switches.read() } });
 });
+resetDialog.mount(switches.root);
+
+/** Prefilled from what the server says is running, switches included */
+function openReset(): void {
+  switches.fill(hello?.params.features);
+  resetDialog.showFrom(hello);
+}
 
 const backData = new BackDataOverlay(() => {
   connection.send({ type: 'cancelBackData' });
-  resetDialog.showFrom(hello);
+  openReset();
 });
 
-app.append(header.root, upper, lower, controls.root, resetDialog.root, backData.root);
+app.append(header.root, marketStatus.root, upper, lower, controls.root, resetDialog.root, backData.root);
 controls.setTimeframe(timeframeIndex);
 
 function setTimeframe(index: number): void {
@@ -119,6 +148,7 @@ function setTimeframe(index: number): void {
   // Asking is cheaper and more honest than keeping a second copy of history here.
   bars.reset(bucketer);
   chart.clear();
+  overlays.setBucketer(bucketer);
   connection.send({ type: 'backfill' });
 }
 
@@ -136,9 +166,17 @@ function onMessage(msg: ServerMessage): void {
         connection.close();
         return;
       }
+      // A hello arrives on connect and again after every reset, so the switches here are
+      // always the running engine's
+      features = withDefaults(msg.params.features);
+      marketStatus.setFeatures(features);
+      brokerStatus.setFeatures(features);
+      agents.setColumns(rosterColumns(features));
+      const on = countOn(features);
       chartNote.textContent =
         `seed ${msg.params.seed} - ${msg.params.agentCount === 0 ? 'derived' : msg.params.agentCount} agents`
-        + ` - float ${msg.params.shareFloat.toLocaleString('en-US')}`;
+        + ` - float ${msg.params.shareFloat.toLocaleString('en-US')}`
+        + (on > 0 ? ` - ${on} order model switch${on === 1 ? '' : 'es'} on` : '');
       return;
     }
 
@@ -147,6 +185,7 @@ function onMessage(msg: ServerMessage): void {
       // both cases whatever is on the chart is either empty or the wrong shape.
       bars.reset(TIMEFRAMES[timeframeIndex] ?? TIMEFRAMES[0]!, msg.prints);
       chart.setAll(bars.all);
+      overlays.reset(msg.prints);
       chartTitle.textContent = msg.truncated
         ? `Price (history from ${msg.prints.length.toLocaleString('en-US')} of `
         + `${msg.tickCountAtCapture.toLocaleString('en-US')} trades)`
@@ -186,12 +225,16 @@ function applyFrame(f: Frame): void {
 
   header.update(f);
   controls.update(f);
+  marketStatus.update(f);
+  brokerStatus.update(f);
 
   if (f.prints.length > 0) {
     bars.add(f.prints);
     const last = bars.last;
     if (last) chart.update(last);
+    overlays.add(f.prints);
   }
+  overlays.update(f);
 
   ladder.set({ bids: f.book.bids, asks: f.book.asks, spread: f.spread, price: f.price });
 
@@ -253,7 +296,7 @@ window.addEventListener('keydown', (e) => {
       connection.send({ type: 'sentimentNudge', delta: 0.01 });
       break;
     case 'r': case 'R':
-      resetDialog.showFrom(hello);
+      openReset();
       break;
     case 'Escape':
       resetDialog.hide();

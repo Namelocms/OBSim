@@ -44,6 +44,82 @@ struct FrameAgentRow {
 	bool isTransient = false;
 	/* Derived, not a status of its own: a LEAVING agent past its unwind window */
 	bool isStranded = false;
+
+	// ---- The account (OrderModelPlan Step 4.1) ----
+	/* Worth at the last price: cash, escrow and long shares, less shares owed */
+	double equity = 0.0;
+	/* Shares sold short and still owed, and how many of those are on loan */
+	unsigned int shortShares = 0;
+	unsigned int borrowedShares = 0;
+	double buyingPower = 0.0;
+	/* Has the equity to borrow under the margin rules */
+	bool marginPrivileges = false;
+	/* Below its maintenance requirement right now */
+	bool inViolation = false;
+	/* Stops and other orders the broker is holding for it */
+	int heldOrders = 0;
+};
+
+/* The state of the market's structure, rather than of its price (OrderModelPlan Step 4.1) */
+struct FrameMarketState {
+	// LULD
+	bool luldActive = false;
+	double luldLower = 0.0;
+	double luldUpper = 0.0;
+	double luldReference = 0.0;
+	bool limitState = false;
+	bool paused = false;
+	double pauseEndsMs = 0.0;
+	// Short sale restriction
+	bool ssrActive = false;
+	double ssrUntilMs = 0.0;
+	double ssrReferenceClose = 0.0;
+	// Official prices
+	double officialOpen = 0.0;
+	double officialClose = 0.0;
+	double previousClose = 0.0;
+	// The next cross, while it is collecting: before the open, and after the on-close cutoff
+	bool auctionCollecting = false;
+	bool auctionIsOpen = false;
+	double indicativePrice = 0.0;
+	unsigned long long indicativeMatched = 0;
+	unsigned long long imbalance = 0;
+	OrderAction imbalanceSide = OrderAction::BID;
+	int auctionOrders = 0;
+};
+
+/* The lending pool */
+struct FrameLending {
+	double supply = 0.0;
+	unsigned long long borrowed = 0;
+	double utilisation = 0.0;
+	double feeRate = 0.0;
+	/* Shares sold short across every account, borrowed or not */
+	unsigned long long shortInterest = 0;
+};
+
+/* What the house has taken: the ledger's accounts */
+struct FrameHouse {
+	double commissions = 0.0;
+	double exchangeFees = 0.0;
+	double regulatoryFees = 0.0;
+	double marginInterest = 0.0;
+	double borrowFees = 0.0;
+	double brokerLosses = 0.0;
+};
+
+/* Running counts of what the broker has done over the run */
+struct FrameBrokerCounts {
+	long long marginCalls = 0;
+	long long writeOffs = 0;
+	long long stopsTriggered = 0;
+	long long cascades = 0;
+	int deepestCascade = 0;
+	long long recalledShares = 0;
+	long long buyIns = 0;
+	long long brackets = 0;
+	long long tradingPauses = 0;
+	long long ssrTriggers = 0;
 };
 
 /* One line of the event log, with its time kept separate from its text */
@@ -110,6 +186,12 @@ struct MarketFrame {
 	bool backDataAborted = false;
 	/* Only meaningful while backDataRunning */
 	BackDataProgress backData;
+
+	// ---- Market structure, lending, the house, the broker (OrderModelPlan Step 4.1) ----
+	FrameMarketState market;
+	FrameLending lending;
+	FrameHouse house;
+	FrameBrokerCounts broker;
 
 	// ---- Book depth, best first ----
 	std::vector<BookLevel> bids;
