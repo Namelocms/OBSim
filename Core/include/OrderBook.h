@@ -93,13 +93,13 @@ public:
 class OrderBook {
 public:
 	/* Tick price precision decimal points. Above $1 == 0.01, Below $1 == 0.0001 */
-	double tickPrecision;
+	double tickPrecision = 0.01;
 	/* Current session of the market */
-	Session session;
+	Session session = Session::PREMARKET;
 	/* Last traded price */
-	double currentPrice;
+	double currentPrice = 0.0;
 	/* Number of shares available to trade */
-	unsigned int shareFloat;
+	unsigned int shareFloat = 0;
 	/* Simulation Clock */
 	SimClock* clock;
 	/* Executed trades since the start
@@ -108,9 +108,11 @@ public:
 	* levels counts four. The names `tickCount` and `tickHistory` predate that meaning
 	* and are kept so the terminal UI needs no edit, but a "tick" here is a trade.
 	*/
-	long long tickCount;
-	/* The overall neutral sentiment value for all agents in the market */
-	double marketNeutralSentiment;
+	long long tickCount = 0;
+	/* The overall neutral sentiment value for all agents in the market. Every run starts at
+	*  neutral (resetToInitial): a bull or bear nudge belongs to the run it was made in, and a
+	*  seed must give the same market whatever the run before it was nudged to. */
+	double marketNeutralSentiment = 0.0;
 	/* Retained trade prints, oldest first
 	*
 	* A deque, and trimmed from the front once it passes tickHistoryMax, so memory is

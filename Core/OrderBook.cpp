@@ -280,6 +280,7 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->shareFloat = (shareFloat == 0) ? randomInt(100'000, 100'000'000) : shareFloat;
 	this->tickHistory.clear();
 	this->tickCount = 0;
+	this->marketNeutralSentiment = 0.0;
 	this->wakeQueue.clear();
 	this->ledger.reset();
 	this->cashScale = 1.0;
