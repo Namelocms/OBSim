@@ -141,6 +141,10 @@ bool SimSession::takeBackfill(TradeBackfill& out) {
 }
 
 void SimSession::fulfilBackfill_() {
+	// A request made while back data runs -- every reset makes one, and so does a client
+	// connecting mid-run -- waits for the handoff. Captured now it would hold the first few
+	// trades of a history the chart is about to need in full, and nothing asks again.
+	if (this->sim_.backDataRunning.load()) { return; }
 	const size_t wanted = this->backfillWanted_.exchange(0);
 	if (wanted == 0) { return; }
 
