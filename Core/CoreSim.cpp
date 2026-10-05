@@ -78,6 +78,7 @@ void CoreSim::run(SimClock& clock) {
 	this->OB.resetToInitial(this->parameters.obStartPrice, this->parameters.obShareFloat, true);  // = OrderBook(clock, this->parameters.obStartPrice, this->parameters.obShareFloat);
 	this->OB.clock = &clock;
 	this->OB.features = this->parameters.features;
+	this->OB.onLog = this->onLog;
 	this->broker.reset();
 
 	// The agents map was just cleared, so every pooled slot id in the free list is dangling
@@ -724,7 +725,7 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 			this->OB.officialClose = (cross.matched > 0) ? cross.price : this->OB.currentPrice;
 			this->broker.processTriggers();
 			if (this->onLog && cross.matched > 0) {
-				this->onLog({ LogEntry::Kind::FILL, boundaryMs, "CLOSING CROSS " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
+				this->onLog({ LogEntry::Kind::ALERT, boundaryMs, "CLOSING CROSS " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
 			}
 		}
 		// Bands end with the regular session. Without auctions, the official close is simply the
@@ -754,7 +755,7 @@ bool CoreSim::processSessionBoundaries(double targetSimTimeMs, SimClock& clock) 
 			this->OB.officialOpen = (cross.matched > 0) ? cross.price : this->OB.currentPrice;
 			this->broker.processTriggers();
 			if (this->onLog && cross.matched > 0) {
-				this->onLog({ LogEntry::Kind::FILL, boundaryMs, "OPENING CROSS " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
+				this->onLog({ LogEntry::Kind::ALERT, boundaryMs, "OPENING CROSS " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
 			}
 		}
 		// A new trading day measures the short sale restriction against the most recent close
@@ -828,7 +829,7 @@ void CoreSim::endTradingPauseIfDue(double upToMs, SimClock& clock) {
 	Luld::start(this->OB, (cross.matched > 0) ? cross.price : this->OB.luld.reference, at);
 	++this->broker.stats.reopenings;
 	if (this->onLog) {
-		this->onLog({ LogEntry::Kind::HOLD, at, "LULD REOPEN " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
+		this->onLog({ LogEntry::Kind::ALERT, at, "LULD REOPEN " + std::to_string(cross.matched) + " @ " + std::to_string(cross.price) });
 	}
 	this->broker.processTriggers();
 }

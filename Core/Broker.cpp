@@ -531,6 +531,8 @@ void Broker::release(const std::shared_ptr<Order>& order) {
 	if (agent == nullptr) { order->status = OrderStatus::CANCELED; return; }
 	agent->heldOrders.erase(order->id);
 	++this->stats.stopsTriggered;
+	this->OB.log(LogEntry::Kind::STOP, "STOP " + agent->id + (order->side == OrderAction::BID ? " buy " : " sell ")
+		+ std::to_string(order->volume) + " at " + std::to_string(order->stopPrice));
 
 	// A sell stop that shared its group's reservation and has no group left to take shares
 	// over from takes what the account actually holds, and no more. It can never sell shares
@@ -637,6 +639,7 @@ void Broker::recallLoans() {
 		agent->buyInDue = std::min<unsigned int>(agent->shortShares, agent->buyInDue + recall.second);
 		this->buyIns.insert(agent->id);
 		this->stats.recalledShares += recall.second;
+		this->OB.log(LogEntry::Kind::RISK, "RECALL " + agent->id + " " + std::to_string(recall.second) + " shares");
 	}
 }
 
@@ -693,6 +696,8 @@ void Broker::processTriggers() {
 	// After the pump has settled, see whether the book is sitting at a band
 	if (this->OB.luld.active && Luld::checkLimitState(this->OB, this->OB.clock->simTimeMs)) {
 		++this->stats.tradingPauses;
+		this->OB.log(LogEntry::Kind::ALERT, "LULD TRADING PAUSE, bands " + std::to_string(this->OB.luld.lower)
+			+ " - " + std::to_string(this->OB.luld.upper));
 	}
 }
 
@@ -797,6 +802,8 @@ void Broker::runPump() {
 void Broker::liquidate(const std::shared_ptr<Agent>& agent) {
 	if (agent == nullptr) { return; }
 	++this->stats.marginCalls;
+	this->OB.log(LogEntry::Kind::RISK, "MARGIN CALL " + agent->id
+		+ (agent->shortShares > 0 ? " short " + std::to_string(agent->shortShares) : " long " + std::to_string(agent->getTotalHoldings())));
 
 	// Everything the account has working is cancelled first: the escrow comes back, nothing
 	// can trade against the liquidation itself, and none of it changes the account's equity
@@ -856,6 +863,7 @@ void Broker::writeOffIfInsolvent(const std::shared_ptr<Agent>& agent) {
 	this->OB.ledger.brokerLosses += loss;
 	agent->updateCash(loss);
 	++this->stats.writeOffs;
+	this->OB.log(LogEntry::Kind::RISK, "WRITE-OFF " + agent->id + " $" + std::to_string(loss));
 	if (!isLifecycleStatus(agent->status)) { agent->status = AgentStatus::BANKRUPT; }
 }
 

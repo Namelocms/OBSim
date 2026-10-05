@@ -134,6 +134,10 @@ void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 	// is called once per leg instead, from where both are still known.
 }
 
+void OrderBook::log(LogEntry::Kind kind, const std::string& text) const {
+	if (this->onLog) { this->onLog({ kind, (this->clock != nullptr) ? this->clock->simTimeMs : 0.0, text }); }
+}
+
 double OrderBook::midpoint() {
 	std::vector<std::shared_ptr<Order>> bid = this->peekBestN(OrderAction::BID, 1);
 	std::vector<std::shared_ptr<Order>> ask = this->peekBestN(OrderAction::ASK, 1);
@@ -179,6 +183,8 @@ void OrderBook::recordTrade(double price, unsigned int volume, OrderAction aggre
 		&& price <= this->ssrReferenceClose * (1.0 - SSR_TRIGGER_DECLINE) + 1e-12) {
 		this->ssrUntilMs = MarketCalendar::dayStartMs(MarketCalendar::dayIndex(this->clock->simTimeMs) + 2);
 		++this->ssrTriggers;
+		this->log(LogEntry::Kind::ALERT, "SHORT SALE RESTRICTION: " + std::to_string(price)
+			+ " is 10% under the prior close " + std::to_string(this->ssrReferenceClose));
 	}
 
 	// Recorded for the broker to act on afterwards, never acted on here

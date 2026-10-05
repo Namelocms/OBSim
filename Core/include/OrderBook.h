@@ -15,6 +15,8 @@
 #include "StockLoan.h"
 #include "OrderGroup.h"
 #include "Luld.h"
+#include "LogEntry.h"
+#include <functional>
 
 class Agent;
 class SimClock;
@@ -168,6 +170,13 @@ public:
 	double previousClose = 0.0;
 	/* LULD bands, limit state and trading pauses (OrderModelPlan Step 3.2) */
 	LuldState luld;
+
+	/* Where the engine's components report what they did: the broker's margin calls and
+	*  stops, a trading pause, the short sale restriction. CoreSim::run points it at its own
+	*  onLog. Null in a harness that never set one, which costs one check. */
+	std::function<void(LogEntry)> onLog;
+	/* Report one event, timestamped now */
+	void log(LogEntry::Kind kind, const std::string& text) const;
 
 	// ---- Short sale restriction, Reg SHO Rule 201 (OrderModelPlan Step 3.3) ----
 
