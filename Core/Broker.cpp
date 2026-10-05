@@ -154,7 +154,10 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 		// matching engine. See MatchingEngine::sweep for why that asymmetry is deliberate.
 	}
 	else if (request.mark == SaleMark::LONG) {
-		// An ask reserves the shares it is selling, so they cannot be sold twice
+		// An ask reserves the shares it is selling, so they cannot be sold twice. Never both,
+		// from this side: while a short sale is working, the account's shares are already
+		// spoken for -- that sale sells them first when it fills (MatchingEngine::openShort)
+		if (Account::pendingShortShares(*agent) > 0) { return nullptr; }
 		if (request.volume > agent->getTotalHoldings()) { return nullptr; }
 		reserved = agent->removeHoldings(int(request.volume));
 	}
@@ -288,7 +291,9 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 		}
 		else if (order->mark == SaleMark::SHORT) { this->OB.lending.releaseLocate(oldVolume - newVolume); }
 	}
-	else if (newVolume > oldVolume && (newVolume - oldVolume) > agent->getTotalHoldings()) {
+	else if (newVolume > oldVolume
+		&& ((newVolume - oldVolume) > agent->getTotalHoldings() || Account::pendingShortShares(*agent) > 0)) {
+		// More shares for a long sale, which a working short sale has a prior claim on
 		++this->stats.replacesRefused;
 		return nullptr;
 	}
@@ -415,6 +420,8 @@ std::shared_ptr<Order> Broker::hold(const OrderRequest& request, const std::shar
 		// A leg sharing an OCO sibling's reservation does not check holdings: the sibling holds
 		// the shares, and the group keeps the two the same size
 		if (reserveShares) {
+			// As for a long ask: shares a working short sale will sell are not free to reserve
+			if (Account::pendingShortShares(*agent) > 0) { return nullptr; }
 			if (request.volume > agent->getTotalHoldings()) { return nullptr; }
 			reserved = agent->removeHoldings(int(request.volume));
 		}

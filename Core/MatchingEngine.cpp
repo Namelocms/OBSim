@@ -318,9 +318,20 @@ void MatchingEngine::deliverShares(Agent& buyer, double price, unsigned int volu
 }
 
 void MatchingEngine::openShort(const Order& sale, Agent& seller, unsigned int volume) {
-	seller.shortShares += volume;
-	this->OB.lending.shortSoldBy[int(seller.type)][int(seller.subType)] += volume;
-	if (sale.mark == SaleMark::SHORT) { this->OB.lending.openLoan(seller, volume, this->OB.clock->simTimeMs); }
+	// One account, one net position. A short sale placed flat can fill after the account has
+	// bought shares -- a bid of its own filled first -- and a broker nets a sale against the
+	// position whatever it was marked when entered: the shares held go first, exactly as a long
+	// sale would sell them, and only the rest is short. Their locate is not needed and goes back.
+	unsigned int fromLong = std::min(volume, seller.getTotalHoldings());
+	if (fromLong > 0) {
+		seller.removeHoldings(int(fromLong));
+		if (sale.mark == SaleMark::SHORT) { this->OB.lending.releaseLocate(fromLong); }
+	}
+	unsigned int shortVolume = volume - fromLong;
+	if (shortVolume == 0) { return; }
+	seller.shortShares += shortVolume;
+	this->OB.lending.shortSoldBy[int(seller.type)][int(seller.subType)] += shortVolume;
+	if (sale.mark == SaleMark::SHORT) { this->OB.lending.openLoan(seller, shortVolume, this->OB.clock->simTimeMs); }
 	// SHORT_EXEMPT: owed but not borrowed, a fail until Broker::closeOutFails deals with it
 }
 
