@@ -56,6 +56,9 @@ public:
 	* adds up volume. What fill-or-kill decides on. Capped at the order's own volume.
 	*/
 	unsigned int fillableVolume(const std::shared_ptr<Order>& order) const;
+	/* Place a midpoint-pegged order: trade it against opposite pegs at the midpoint if it can,
+	*  then rest what is left in the midpoint book (OrderModelPlan Step 3.4) */
+	void matchPeg(std::shared_ptr<Order> order);
 
 	/* Work out a cross over the given auction orders and the eligible continuous book, without
 	*  changing anything. Price maximises matched volume, then minimises the imbalance, then
@@ -93,6 +96,12 @@ private:
 	*  legs and auction legs. */
 	void afterFill(Order& taker, Agent& takerAgent, Order& maker, Agent& makerAgent, double price,
 		unsigned int volume, bool auction);
+	/* Trade an incoming order against opposite midpoint pegs, at the midpoint, before it walks
+	*  the price-time book: the midpoint improves on the touch, so pegs there go first */
+	void matchAgainstPegs(const std::shared_ptr<Order>& incoming, const std::shared_ptr<Agent>& agent);
+	/* One leg against a resting peg, at the midpoint */
+	void settlePegLeg(const std::shared_ptr<Order>& incoming, const std::shared_ptr<Agent>& incomingAgent,
+		const std::shared_ptr<Order>& peg, const std::shared_ptr<Agent>& pegAgent, double mid, unsigned int volume);
 	/* One matched pair in a cross, at the cross price */
 	void settleAuctionLeg(Order& bid, Agent& bidAgent, Order& ask, Agent& askAgent, double price, unsigned int volume);
 	/* Hand bought shares to the buyer: they cover its short first, fails before borrowed

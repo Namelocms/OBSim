@@ -43,6 +43,11 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 	const bool isLimit = (request.type == OrderType::LIMIT);
 	if (isLimit && !(request.price > 0.0)) { return nullptr; }
 	if ((request.sessions & SESSIONS_ALL) == 0) { return nullptr; }
+	// Every flag needs a price to mean anything: a hidden market order, a reserve market order
+	// or a market peg is not an order a venue accepts
+	const bool flagged = request.postOnly || request.hidden || request.displayQty > 0 || request.midpointPeg;
+	if (flagged && !isLimit) { return nullptr; }
+	if (request.midpointPeg && (request.hidden || request.displayQty > 0)) { return nullptr; }
 
 	// ---- Time in force ----
 	//
@@ -73,6 +78,28 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 	const double escrowPrice = isLimit ? request.price : collarPrice;
 	// A short sale's limit may be lifted above the bid by the short sale restriction, below
 	double limitPrice = request.price;
+
+	// Post-only: an order that would take liquidity on arrival is refused, or priced one tick
+	// passive of the best opposite order. Decided before anything is escrowed.
+	if (request.postOnly && !request.midpointPeg) {
+		Order probe("", agent->id, request.price, request.volume, nowMs, request.side, OrderType::LIMIT, {}, 0.0, TimeInForce::GTC, request.sessions);
+		double mid = this->OB.midpoint();
+		const auto& pegs = (request.side == OrderAction::BID) ? this->OB.pegAsks : this->OB.pegBids;
+		bool takesPeg = mid > 0.0 && !pegs.empty()
+			&& ((request.side == OrderAction::BID) ? request.price >= mid : request.price <= mid);
+		if (takesPeg || this->ME.fillableVolume(std::make_shared<Order>(probe)) > 0) {
+			if (!request.postOnlyReprice) { ++this->stats.postOnlyRefused; return nullptr; }
+			double best = -1.0;
+			if (request.side == OrderAction::BID) { for (const auto& o : this->OB.askQueue) { if (o->status == OrderStatus::OPEN) { best = o->price; break; } } }
+			else { for (const auto& o : this->OB.bidQueue) { if (o->status == OrderStatus::OPEN) { best = o->price; break; } } }
+			if (!(best > 0.0)) { return nullptr; }
+			double tick = (best < 1.00) ? 0.0001 : 0.01;
+			limitPrice = roundTo((request.side == OrderAction::BID) ? best - tick : best + tick, tick);
+			if (!(limitPrice > 0.0)) { return nullptr; }
+			++this->stats.postOnlyRepriced;
+		}
+	}
+	const double bidPrice = (request.side == OrderAction::BID && isLimit) ? limitPrice : escrowPrice;
 
 	TimeInForce tif = (isLimit || auction) ? request.tif : TimeInForce::IOC;
 	double expiresAtMs = 0.0;
@@ -112,11 +139,11 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 			// because the agent sized against buying power before the cost was rounded to the
 			// cent (and an endowment is not cent-rounded), so rounding can carry a floor-sized
 			// order up to half a cent past it. That must never get a valid order refused.
-			double escrow = roundTo(escrowPrice * request.volume);
+			double escrow = roundTo(bidPrice * request.volume);
 			// With fees on, the bid also escrows its worst-case fees, rounded up to the cent, so
 			// a cash account can never be driven below zero by what a fill costs
 			if (Account::feesEnabled(*agent)) {
-				double worst = Account::feeSchedule(*agent).worstCaseBuyFees(request.volume, escrowPrice);
+				double worst = Account::feeSchedule(*agent).worstCaseBuyFees(request.volume, bidPrice);
 				feeReserve = std::ceil(worst / CASH_PRECISION - 1e-9) * CASH_PRECISION;
 			}
 			if (!covering && escrow + feeReserve > Account::buyingPower(*agent) + CASH_PRECISION) { return nullptr; }
@@ -168,6 +195,18 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 	order->feeReserve = feeReserve;
 	order->mark = (request.side == OrderAction::ASK) ? request.mark : SaleMark::LONG;
 	order->groupId = groupId;
+	order->hidden = request.hidden;
+	if (request.displayQty > 0 && request.displayQty < request.volume) {
+		order->displayQty = request.displayQty;
+		order->tipRemaining = request.displayQty;
+	}
+	order->midpointPeg = request.midpointPeg;
+
+	// A pegged order trades only at the midpoint, through its own book
+	if (order->midpointPeg) {
+		this->ME.matchPeg(order);
+		return order;
+	}
 
 	// Waits for its cross instead of matching now
 	if (auction) {

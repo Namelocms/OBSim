@@ -325,15 +325,18 @@ void SimSession::fillBook_(MarketFrame& frame) const {
 		out.reserve(maxLevels);
 		for (const std::shared_ptr<Order>& order : queue) {
 			if (order == nullptr || order->status == OrderStatus::CANCELED) { continue; }
+			// The ladder is the displayed book: hidden orders never show, reserve orders only
+			// show their tip (OrderModelPlan Step 3.4)
+			if (!order->isDisplayed()) { continue; }
 			if (!out.empty() && out.back().price == order->price) {
-				out.back().volume += order->volume;
+				out.back().volume += order->displayedVolume();
 				out.back().orders += 1;
 				continue;
 			}
 			if ((int)out.size() >= maxLevels) { break; }
 			BookLevel level;
 			level.price = order->price;
-			level.volume = order->volume;
+			level.volume = order->displayedVolume();
 			level.orders = 1;
 			out.push_back(level);
 		}

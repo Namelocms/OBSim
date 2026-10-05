@@ -63,6 +63,9 @@ public:
 		if (o1->price != o2->price) {
 			return o1->price > o2->price; // higher price first
 		}
+		if (o1->isDisplayed() != o2->isDisplayed()) {
+			return o1->isDisplayed();   // displayed before hidden at the same price
+		}
 		if (o1->timestamp != o2->timestamp) {
 			return o1->timestamp < o2->timestamp; // earlier timestamp first (FIFO)
 		}
@@ -74,6 +77,9 @@ public:
 	bool operator()(const std::shared_ptr<Order>& o1, const std::shared_ptr<Order>& o2) const {
 		if (o1->price != o2->price) {
 			return o1->price < o2->price; // lower price first
+		}
+		if (o1->isDisplayed() != o2->isDisplayed()) {
+			return o1->isDisplayed();   // displayed before hidden at the same price
 		}
 		if (o1->timestamp != o2->timestamp) {
 			return o1->timestamp < o2->timestamp; // earlier timestamp first (FIFO)
@@ -174,6 +180,12 @@ public:
 	long long ssrTriggers = 0;
 	/* Is the restriction in force at this time? */
 	bool ssrActive(double nowMs) const { return nowMs < this->ssrUntilMs; }
+	/* Midpoint-pegged orders, in time order, held apart from the price-time queues and out of
+	*  the counters (OrderModelPlan Step 3.4) */
+	std::vector<std::shared_ptr<Order>> pegBids;
+	std::vector<std::shared_ptr<Order>> pegAsks;
+	/* The midpoint of the displayed best bid and offer, or 0 if either side is empty */
+	double midpoint();
 	/* Queue an on-open or on-close order for its cross */
 	void queueForAuction(const std::shared_ptr<Order>& order);
 	/* Take an order out of the auction queue, returning whether it was there */
@@ -304,7 +316,8 @@ private:
 		while (it != queue.end() && bestN.size() < n) {
 			std::shared_ptr<Order> order = *it;
 
-			if (order->status != OrderStatus::CANCELED) {
+			// The quote is what is displayed: a hidden order trades but is never the best bid
+			if (order->status != OrderStatus::CANCELED && order->isDisplayed()) {
 				bestN.push_back(order);
 			}
 

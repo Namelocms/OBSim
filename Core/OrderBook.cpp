@@ -66,9 +66,15 @@ void OrderBook::cancelOrder(std::shared_ptr<Order> order, std::shared_ptr<Agent>
 		this->groupEvents.push_back({ GroupEvent::Type::CANCEL, order->groupId, order->id, order->volume });
 	}
 
-	// An order waiting for a cross is not in either queue and not in the counters
-	if (order->inAuction) {
-		this->removeFromAuction(order);
+	// An order waiting for a cross, or pegged to the midpoint, is not in either queue and not
+	// in the counters
+	if (order->inAuction || order->inPegBook) {
+		if (order->inAuction) { this->removeFromAuction(order); }
+		else {
+			auto& pegs = (order->side == OrderAction::BID) ? this->pegBids : this->pegAsks;
+			pegs.erase(std::remove(pegs.begin(), pegs.end(), order), pegs.end());
+			order->inPegBook = false;
+		}
 		if (order->side == OrderAction::BID) {
 			agent->updateCash(order->price * order->volume);
 			Account::releaseFeeReserve(*agent, *order);
@@ -126,6 +132,13 @@ void OrderBook::fillOrder(std::shared_ptr<Order> order, int volFilled) {
 	// recording -- the trade is, and this function cannot see who crossed to cause it
 	// nor whether the same leg also closed the aggressor. MatchingEngine::recordTrade
 	// is called once per leg instead, from where both are still known.
+}
+
+double OrderBook::midpoint() {
+	std::vector<std::shared_ptr<Order>> bid = this->peekBestN(OrderAction::BID, 1);
+	std::vector<std::shared_ptr<Order>> ask = this->peekBestN(OrderAction::ASK, 1);
+	if (bid.empty() || ask.empty() || bid[0] == nullptr || ask[0] == nullptr) { return 0.0; }
+	return 0.5 * (bid[0]->price + ask[0]->price);
 }
 
 void OrderBook::queueForAuction(const std::shared_ptr<Order>& order) {
@@ -190,6 +203,11 @@ unsigned int OrderBook::expireOrders(double nowMs) {
 	}
 	for (const std::shared_ptr<Order>& order : this->askQueue) {
 		if (order->status == OrderStatus::OPEN && order->expiresAtMs <= nowMs) { expiredOrders.push_back(order); }
+	}
+	for (const auto* pegs : { &this->pegBids, &this->pegAsks }) {
+		for (const std::shared_ptr<Order>& order : *pegs) {
+			if (order->status == OrderStatus::OPEN && order->expiresAtMs > 0.0 && order->expiresAtMs <= nowMs) { expiredOrders.push_back(order); }
+		}
 	}
 
 	// Route through cancelOrder so escrowed cash and reserved shares are returned
@@ -263,6 +281,8 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 	this->pendingPrints.clear();
 	this->groupEvents.clear();
 	this->auctionOrders.clear();
+	this->pegBids.clear();
+	this->pegAsks.clear();
 	this->officialOpen = 0.0;
 	this->officialClose = 0.0;
 	this->previousClose = 0.0;

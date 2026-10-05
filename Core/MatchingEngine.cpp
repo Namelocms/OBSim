@@ -21,6 +21,8 @@ void MatchingEngine::match(std::shared_ptr<Order> order) {
 
 	// Nothing may fire a trigger while this is raised, see Broker::processTriggers
 	++this->OB.matchDepth;
+	// The midpoint improves on the touch, so resting pegs there trade first
+	if (!this->OB.pegBids.empty() || !this->OB.pegAsks.empty()) { this->matchAgainstPegs(order, agent); }
 	double totalCost = (order->side == OrderAction::BID)
 		? this->sweep(order, agent, this->OB.askQueue)
 		: this->sweep(order, agent, this->OB.bidQueue);
@@ -77,7 +79,9 @@ double MatchingEngine::sweep(const std::shared_ptr<Order>& order, const std::sha
 			break;
 		}
 
-		unsigned int tradeVol = std::min(order->volume, resting->volume);
+		// A reserve order trades its displayed tip, then refreshes from its reserve below
+		unsigned int restingAvailable = (resting->displayQty > 0) ? std::min(resting->tipRemaining, resting->volume) : resting->volume;
+		unsigned int tradeVol = std::min(order->volume, restingAvailable);
 
 		// A market bid is the one order with no escrow behind it: it pays as it goes, so
 		// each leg is bounded by what the buyer can still afford. Deliberately asymmetric
@@ -94,9 +98,22 @@ double MatchingEngine::sweep(const std::shared_ptr<Order>& order, const std::sha
 		if (tradeVol < 1) { break; }
 
 		totalCost += this->settleLeg(order, agent, resting, this->OB.getAgent(resting->agentId), tradeVol);
+		if (resting->displayQty > 0) { resting->tipRemaining -= std::min(resting->tipRemaining, tradeVol); }
 
 		if (resting->volume == 0) {
 			it = opposite.erase(it);
+		}
+		// The tip ran out with reserve behind it: a fresh tip goes to the back of its price
+		// level with a new timestamp, and the walk carries on to whoever is next
+		else if (resting->displayQty > 0 && resting->tipRemaining == 0) {
+			it = opposite.erase(it);
+			resting->timestamp = this->OB.clock->simTimeMs;
+			resting->tipRemaining = std::min(resting->displayQty, resting->volume);
+			auto refreshed = opposite.insert(resting).first;
+			// If nothing else waits at that price the refreshed tip sorts ahead of where the walk
+			// would go next, so step back onto it: the incoming order keeps trading the reserve
+			if (it == opposite.end() || opposite.key_comp()(*refreshed, *it)) { it = refreshed; }
+			continue;
 		}
 		// The resting order is still there, so the incoming one is exhausted (or, for a
 		// market bid, out of cash). Either way the walk is over.
@@ -520,4 +537,106 @@ CrossResult MatchingEngine::runCross(TimeInForce which, PrintKind kind, double r
 
 	--this->OB.matchDepth;
 	return result;
+}
+
+// ---- Midpoint pegs (OrderModelPlan Step 3.4) ----
+
+void MatchingEngine::settlePegLeg(const std::shared_ptr<Order>& incoming, const std::shared_ptr<Agent>& incomingAgent,
+	const std::shared_ptr<Order>& peg, const std::shared_ptr<Agent>& pegAgent, double mid, unsigned int volume) {
+	double cost = roundTo(volume * mid);
+	const bool incomingBuys = (incoming->side == OrderAction::BID);
+	const std::shared_ptr<Order>& bid = incomingBuys ? incoming : peg;
+	const std::shared_ptr<Agent>& buyer = incomingBuys ? incomingAgent : pegAgent;
+	const std::shared_ptr<Order>& ask = incomingBuys ? peg : incoming;
+	const std::shared_ptr<Agent>& seller = incomingBuys ? pegAgent : incomingAgent;
+
+	// A limit or pegged bid was escrowed at its price and gets the difference back; a market
+	// bid pays as it goes
+	if (bid->type == OrderType::LIMIT) {
+		double refund = roundTo(volume * (bid->price - mid));
+		if (refund > 0) { buyer->updateCash(refund); }
+	}
+	else { buyer->updateCash(-cost); }
+	seller->updateCash(cost);
+	this->deliverShares(*buyer, mid, volume);
+	if (ask->isShortSale()) { this->openShort(*ask, *seller, volume); }
+
+	incoming->volume -= volume;
+	peg->volume -= volume;
+	if (peg->volume == 0) {
+		peg->status = OrderStatus::CLOSED;
+		auto& pegs = (peg->side == OrderAction::BID) ? this->OB.pegBids : this->OB.pegAsks;
+		pegs.erase(std::remove(pegs.begin(), pegs.end(), peg), pegs.end());
+		peg->inPegBook = false;
+		pegAgent->removeActiveOrder(peg);
+	}
+
+	// A midpoint print is a real trade at a price that may sit between ticks
+	this->OB.updateCurrentPrice(mid);
+	this->OB.recordTrade(mid, volume, incoming->side);
+	this->afterFill(*incoming, *incomingAgent, *peg, *pegAgent, mid, volume, false);
+}
+
+void MatchingEngine::matchAgainstPegs(const std::shared_ptr<Order>& incoming, const std::shared_ptr<Agent>& agent) {
+	if (agent == nullptr || incoming->volume == 0) { return; }
+	if (!incoming->eligibleIn(this->OB.session) || this->OB.luld.paused) { return; }
+	double mid = this->OB.midpoint();
+	if (!(mid > 0.0)) { return; }
+
+	const bool buys = (incoming->side == OrderAction::BID);
+	// The incoming order has to reach the midpoint; a market order always does
+	if (incoming->type == OrderType::LIMIT && (buys ? incoming->price < mid - 1e-12 : incoming->price > mid + 1e-12)) { return; }
+
+	auto& pegs = buys ? this->OB.pegAsks : this->OB.pegBids;
+	std::vector<std::shared_ptr<Order>> queue = pegs;   // a copy: settling removes filled pegs
+	for (const std::shared_ptr<Order>& peg : queue) {
+		if (incoming->volume == 0) { break; }
+		if (peg->status != OrderStatus::OPEN || peg->agentId == incoming->agentId) { continue; }
+		// A peg trades at the midpoint only if its own cap allows it
+		if (buys ? peg->price > mid + 1e-12 : peg->price < mid - 1e-12) { continue; }
+		if (!peg->eligibleIn(this->OB.session)) { continue; }
+		std::shared_ptr<Agent> pegAgent = this->OB.getAgent(peg->agentId);
+		if (pegAgent == nullptr) { continue; }
+		unsigned int v = std::min(incoming->volume, peg->volume);
+		if (buys && incoming->type == OrderType::MARKET) {
+			unsigned int cap = Account::affordableVolume(*agent, mid);
+			if (agent->shortShares > 0) { cap = std::max(cap, agent->shortShares); }
+			v = std::min(v, cap);
+		}
+		if (v == 0) { break; }
+		this->settlePegLeg(incoming, agent, peg, pegAgent, mid, v);
+	}
+}
+
+void MatchingEngine::matchPeg(std::shared_ptr<Order> order) {
+	if (order == nullptr) { return; }
+	std::shared_ptr<Agent> agent = this->OB.getAgent(order->agentId);
+	if (agent == nullptr) { return; }
+
+	++this->OB.matchDepth;
+	// An arriving peg first meets the opposite pegs at the midpoint, within both caps
+	this->matchAgainstPegs(order, agent);
+	--this->OB.matchDepth;
+
+	if (order->volume == 0) {
+		order->status = OrderStatus::CLOSED;
+		if (order->side == OrderAction::BID) { Account::releaseFeeReserve(*agent, *order); }
+		return;
+	}
+	// IOC and FOK pegs do not rest
+	if (order->tif == TimeInForce::IOC || order->tif == TimeInForce::FOK) {
+		order->status = OrderStatus::CANCELED;
+		if (order->side == OrderAction::BID) {
+			agent->updateCash(order->price * order->volume);
+			Account::releaseFeeReserve(*agent, *order);
+		}
+		else {
+			for (Holding h : order->getReturnableShares()) { agent->upsertHolding(h); }
+			if (order->mark == SaleMark::SHORT) { this->OB.lending.releaseLocate(order->volume); }
+		}
+		return;
+	}
+	order->inPegBook = true;
+	(order->side == OrderAction::BID ? this->OB.pegBids : this->OB.pegAsks).push_back(order);
+	agent->upsertActiveOrder(order);
 }

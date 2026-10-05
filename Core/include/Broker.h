@@ -67,6 +67,20 @@ struct OrderRequest {
 	double trailAmount = 0.0;
 	double trailPercent = 0.0;
 	bool isStop() const { return this->stopPrice > 0.0 || this->trailAmount > 0.0 || this->trailPercent > 0.0; }
+
+	// ---- Order flags (OrderModelPlan Step 3.4) ----
+	/* Never take liquidity. Refused if it would, unless postOnlyReprice, in which case it is
+	*  priced one tick passive of the best opposite order instead -- how a market maker makes
+	*  sure it earns the rebate rather than paying the fee */
+	bool postOnly = false;
+	bool postOnlyReprice = false;
+	/* Not displayed: trades behind every displayed order at its price */
+	bool hidden = false;
+	/* A reserve order: show this many shares at a time. 0, or not less than the volume, is an
+	*  ordinary fully displayed order. */
+	unsigned int displayQty = 0;
+	/* Rest at the midpoint and trade only there, never past price (the cap) */
+	bool midpointPeg = false;
 	OrderOrigin origin = OrderOrigin::AGENT;
 
 	/* An empty request is how a decision says "nothing to place" */
@@ -150,6 +164,10 @@ struct BrokerStats {
 	long long ocoReductions = 0;
 	/* Bracket children grown because the entry filled some more */
 	long long bracketGrowths = 0;
+
+	// ---- Order flags (OrderModelPlan Step 3.4) ----
+	long long postOnlyRefused = 0;
+	long long postOnlyRepriced = 0;
 
 	// ---- LULD (OrderModelPlan Step 3.2) ----
 	long long tradingPauses = 0;

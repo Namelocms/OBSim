@@ -56,6 +56,29 @@ public:
 	/* Waiting in the exchange's auction queue for an opening or closing cross */
 	bool inAuction = false;
 
+	// ---- Order flags (OrderModelPlan Step 3.4) ----
+	/* Not displayed at all: trades, but behind every displayed order at its price */
+	bool hidden = false;
+	/* A reserve (iceberg) order shows this many shares at a time, 0 for an ordinary one */
+	unsigned int displayQty = 0;
+	/* What is left of the displayed tip. Each time it runs out the tip refreshes from the
+	*  reserve, with a new timestamp, so a reserve order queues like a series of small ones. */
+	unsigned int tipRemaining = 0;
+	/* Rests at the midpoint of the displayed best bid and offer and trades only there. Its limit
+	*  is a cap: a pegged bid never pays more, a pegged offer never takes less. */
+	bool midpointPeg = false;
+	/* Sitting in the exchange's midpoint book rather than the price-time queues */
+	bool inPegBook = false;
+
+	/* Is this order part of the displayed quote? */
+	bool isDisplayed() const { return !this->hidden && !this->midpointPeg; }
+	/* Shares this order shows: none if it is hidden, its tip if it is a reserve order */
+	unsigned int displayedVolume() const {
+		if (!this->isDisplayed()) { return 0; }
+		if (this->displayQty > 0) { return (this->tipRemaining < this->volume) ? this->tipRemaining : this->volume; }
+		return this->volume;
+	}
+
 
 	/* For an ask: long sale, located short, or exempt market maker short. Always LONG for a bid. */
 	SaleMark mark = SaleMark::LONG;
