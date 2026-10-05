@@ -209,17 +209,34 @@ void SimSession::cancelBackData() {
 void SimSession::onTick_() { this->maybePublish_(); }
 void SimSession::onIdle_() { this->maybePublish_(); }
 
+/* The market's and the brokers' events: rare, and the lines a reader is looking for among
+*  thousands of routine agent events a second */
+static bool isNotable(LogEntry::Kind kind) {
+	return kind == LogEntry::Kind::ALERT || kind == LogEntry::Kind::RISK || kind == LogEntry::Kind::STOP;
+}
+
 void SimSession::onLog_(LogEntry entry) {
 	std::lock_guard<std::mutex> lk(this->logMtx_);
-	if ((int)this->pendingLogs_.size() >= this->config.logLinesPerFrame) {
-		++this->pendingLogsDropped_;
-		return;
-	}
 	FrameLogLine line;
 	line.simTimeMs = entry.simTimeMs;
 	line.kind = entry.kind;
 	line.text = std::move(entry.text);
-	this->pendingLogs_.push_back(std::move(line));
+	if ((int)this->pendingLogs_.size() < this->config.logLinesPerFrame) {
+		this->pendingLogs_.push_back(std::move(line));
+		return;
+	}
+	// Full. A routine line is simply dropped; a notable one takes the place of the newest
+	// routine line instead, so a margin call is never lost to the chatter around it. Either
+	// way one line is dropped and counted, and the batch stays in time order.
+	++this->pendingLogsDropped_;
+	if (!isNotable(line.kind)) { return; }
+	for (auto it = this->pendingLogs_.rbegin(); it != this->pendingLogs_.rend(); ++it) {
+		if (!isNotable(it->kind)) {
+			this->pendingLogs_.erase(std::next(it).base());
+			this->pendingLogs_.push_back(std::move(line));
+			return;
+		}
+	}
 }
 
 void SimSession::onBackDataProgress_(BackDataProgress progress) {
