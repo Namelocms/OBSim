@@ -45,6 +45,9 @@ public:
 
 	/* Backfill depth offered to a client that does not ask for a specific one */
 	size_t defaultBackfillTrades = 100000;
+	/* Unsent bytes past which a client misses frames until it catches up: about one frame with a
+	*  full roster, so a reply queued behind it waits a fraction of a second even for a slow reader */
+	static constexpr size_t MAX_CLIENT_BACKLOG_BYTES = 128 * 1024;
 
 private:
 	void publisherLoop_();

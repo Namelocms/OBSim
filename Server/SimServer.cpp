@@ -29,6 +29,11 @@ bool SimServer::start() {
 	// 127.0.0.1, not 0.0.0.0. There is no authentication here and there should not need
 	// to be one, which is only true while nothing off this machine can reach it.
 	this->server_ = std::make_unique<ix::WebSocketServer>(this->port_, "127.0.0.1");
+	// No per-message compression. It is on by default and buys nothing over loopback, while
+	// deflating every frame for every client capped what a client could be sent at a few
+	// hundred KB a second -- a third of the frames a full roster needs, with order replies
+	// queued behind the rest.
+	this->server_->disablePerMessageDeflate();
 
 	this->server_->setOnClientMessageCallback(
 		[this](std::shared_ptr<ix::ConnectionState> /*state*/,
@@ -190,7 +195,15 @@ void SimServer::publisherLoop_() {
 			// encoding a frame with a full roster is the expensive part.
 			const std::string payload = Protocol::encodeFrame(frame);
 			if (this->server_) {
-				for (auto&& client : this->server_->getClients()) { client->sendText(payload); }
+				for (auto&& client : this->server_->getClients()) {
+					// A client still holding a backlog of unsent frames skips this one. Each
+					// frame carries absolute state, so it loses nothing but a sequence gap it
+					// already reports. Queued anyway, a slow reader's buffer grows without
+					// bound, and every ack and order result waits behind all of it: measured,
+					// a reply took 8 seconds and then never came.
+					if (client->bufferedAmount() > MAX_CLIENT_BACKLOG_BYTES) { continue; }
+					client->sendText(payload);
+				}
 			}
 		}
 
