@@ -93,6 +93,14 @@ void CoreSim::run(SimClock& clock) {
 	this->residentCount = 0;
 	this->runTransientFraction = 0.0;
 	this->cashScale = 1.0;
+	// The last run's commands belong to it, posted or queued
+	this->userCommandLog.clear();
+	this->queuedUserCommands.clear();
+	{
+		std::lock_guard<std::mutex> lk(this->userInboxMtx);
+		this->userInbox.clear();
+		this->nextUserCommandId = 1;
+	}
 
 	//std::cout << "Initializing Agents..." << std::endl;
 	this->initAgents(this->parameters.agentStartCount);
@@ -107,6 +115,9 @@ void CoreSim::run(SimClock& clock) {
 		return;
 	}
 
+	// The user arrives with the live market, not before: nothing they do can touch back data
+	this->openUserAccount();
+
 	clock.start();
 	clock.resume(); // recalibrate the wall clock against the non-zero handoff time
 	this->isRunning = true;
@@ -118,12 +129,25 @@ void CoreSim::run(SimClock& clock) {
 		
 		// Handle Pause
 		while (clock.paused.load() && !clock.step.load()) {
+			// A paused market still takes orders: applied at the paused time, as events, so
+			// the user can set up while nothing moves
+			if (this->takeUserCommands(clock.simTimeMs)) {
+				while (!this->eventCallQueue.empty() && this->eventCallQueue.top().user
+					&& this->eventCallQueue.top().callTime <= clock.simTimeMs) {
+					unsigned long long id = this->eventCallQueue.top().generation;
+					this->eventCallQueue.pop();
+					this->applyUserCommand(id);
+				}
+			}
 			// A paused sim still has state worth showing, and a frontend has no other way
 			// to learn it is paused: without this the last frame it holds still says
 			// running, and the pause indicator never appears.
 			if (this->onIdle) { this->onIdle(); }
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
+
+		// Commands the user posted since the last turn join the queue at the current time
+		this->takeUserCommands(clock.simTimeMs);
 
 		// A quiet market is not a finished one. With nobody taking part, let the
 		// clock run on until a sweep or session change brings traders back.
@@ -176,6 +200,15 @@ void CoreSim::run(SimClock& clock) {
 		// the call time into a local before popping.
 		const EventCall nextEventCall = this->eventCallQueue.top();
 
+		// A user command is applied when the queue reaches it, never paced: it was stamped
+		// with a time the clock has already reached
+		if (nextEventCall.user) {
+			this->eventCallQueue.pop();
+			if (nextEventCall.callTime > clock.simTimeMs) { clock.simTimeMs = nextEventCall.callTime; }
+			this->applyUserCommand(nextEventCall.generation);
+			continue;
+		}
+
 		std::shared_ptr<Agent> agent = this->OB.getAgent(nextEventCall.agentId);
 
 		// Discard calls left behind when an agent was woken early
@@ -215,6 +248,10 @@ void CoreSim::run(SimClock& clock) {
 			// Waiting, not working, and the engine is between operations -- the safest
 			// moment there is for a frontend to read coherent state.
 			if (this->onIdle) { this->onIdle(); }
+
+			// A command arriving now must not wait for the event being paced towards: queue it
+			// at the time the clock has reached, and re-read the queue
+			if (this->takeUserCommands(clock.simTimeMs)) { waitInterrupted = true; break; }
 
 			double sleepMs = (nextEventCall.callTime - simTarget) / clock.speedMultiplier.load();
 			if (sleepMs > PACING_SLICE_MS) { sleepMs = PACING_SLICE_MS; }
@@ -696,6 +733,177 @@ void CoreSim::runBackData(SimClock& clock) {
 		this->onLog({ LogEntry::Kind::HOLD, clock.simTimeMs,
 			"BACK DATA COMPLETE, " + std::to_string(this->OB.tickCount) + " ticks, opening in " + es.sessionString[this->OB.session] });
 	}
+}
+
+// ---- The user (OrderModelPlan Step 4.2) ----
+
+void CoreSim::openUserAccount() {
+	this->OB.user.reset();
+	if (!this->userConfig.enabled) { return; }
+
+	// An Agent draws its personality from the random stream as it is built. The user has no
+	// use for one, and an idle account must leave the market exactly as it would have been,
+	// so the stream is put back as it was.
+	std::mt19937 saved = generator;
+	double cash = this->userConfig.scaled ? this->userConfig.cash * this->cashScale : this->userConfig.cash;
+	cash = roundTo((std::max)(cash, 0.0));
+	auto user = std::make_shared<Agent>(USER_ACCOUNT_ID, 1000.0, cash, AgentStatus::ACTIVE,
+		AgentType::RETAIL, AgentSubType::NOISE, this->OB, this->broker);
+	generator = saved;
+
+	user->isUser = true;
+	user->userScaledMoney = this->userConfig.scaled;
+	this->OB.userFees = this->userConfig.fees;
+	this->OB.user = user;
+	// Funded from outside the market, like any account: counted in conservation
+	this->OB.ledger.minted += cash;
+}
+
+void CoreSim::refuseUserCommand(const UserCommand& command, const std::string& reason, double atMs) {
+	if (!this->onUserResult) { return; }
+	UserCommandResult r;
+	r.id = command.id;
+	r.requestId = command.requestId;
+	r.kind = command.kind;
+	r.accepted = false;
+	r.reason = reason;
+	r.atMs = atMs;
+	this->onUserResult(r);
+}
+
+void CoreSim::postUserCommand(UserCommand command) {
+	const bool live = this->isRunning.load() && !this->backDataRunning.load();
+	const bool needsAccount = command.kind != UserCommand::Kind::SENTIMENT;
+	std::lock_guard<std::mutex> lk(this->userInboxMtx);
+	command.id = this->nextUserCommandId++;
+	// Refused here, on the posting thread, only when it could never be applied
+	if (!live) { this->refuseUserCommand(command, "the market is not live yet", 0.0); return; }
+	if (needsAccount && this->OB.user == nullptr) { this->refuseUserCommand(command, "this run has no user account", 0.0); return; }
+	this->userInbox.push_back(std::move(command));
+}
+
+bool CoreSim::takeUserCommands(double nowMs) {
+	std::vector<UserCommand> taken;
+	{
+		std::lock_guard<std::mutex> lk(this->userInboxMtx);
+		if (this->userInbox.empty()) { return false; }
+		taken.swap(this->userInbox);
+	}
+	for (UserCommand& command : taken) {
+		EventCall call;
+		call.callTime = nowMs;
+		call.agentId = USER_ACCOUNT_ID;
+		call.generation = command.id;
+		call.user = true;
+		this->eventCallQueue.push(call);
+		this->queuedUserCommands[command.id] = std::move(command);
+	}
+	return true;
+}
+
+/* The user's working order with this id: resting in the book, waiting for a cross, or held */
+static std::shared_ptr<Order> findUserOrder(const Agent& user, const std::string& id) {
+	auto b = user.activeBids.find(id);
+	if (b != user.activeBids.end()) { return b->second; }
+	auto a = user.activeAsks.find(id);
+	if (a != user.activeAsks.end()) { return a->second; }
+	auto h = user.heldOrders.find(id);
+	if (h != user.heldOrders.end()) { return h->second; }
+	return nullptr;
+}
+
+void CoreSim::applyUserCommand(unsigned long long commandId) {
+	auto found = this->queuedUserCommands.find(commandId);
+	if (found == this->queuedUserCommands.end()) { return; }
+	UserCommand command = std::move(found->second);
+	this->queuedUserCommands.erase(found);
+
+	const double now = (this->OB.clock != nullptr) ? this->OB.clock->simTimeMs : 0.0;
+	std::shared_ptr<Agent> user = this->OB.user;
+	UserCommandResult r;
+	r.id = command.id;
+	r.requestId = command.requestId;
+	r.kind = command.kind;
+	r.atMs = now;
+
+	auto refused = [&r, this](const std::string& fallback) {
+		r.accepted = false;
+		r.reason = this->broker.refusal.empty() ? fallback : this->broker.refusal;
+	};
+
+	std::string text;
+	LogEntry::Kind logKind = LogEntry::Kind::PLACE;
+	switch (command.kind) {
+	case UserCommand::Kind::ORDER: {
+		command.order.origin = OrderOrigin::USER;
+		std::shared_ptr<Order> order = (user != nullptr) ? this->broker.submit(command.order, user) : nullptr;
+		if (order != nullptr) { r.accepted = true; r.orderId = order->id; }
+		else { refused("refused"); }
+		text = std::string("YOU ") + (command.order.side == OrderAction::BID ? "buy " : "sell ")
+			+ std::to_string(command.order.volume);
+		break;
+	}
+	case UserCommand::Kind::OCO: {
+		command.order.origin = OrderOrigin::USER;
+		command.stopLeg.origin = OrderOrigin::USER;
+		std::shared_ptr<OrderGroup> group = (user != nullptr) ? this->broker.submitOco(command.order, command.stopLeg, user) : nullptr;
+		if (group != nullptr) { r.accepted = true; r.orderId = group->id; }
+		else { refused("refused"); }
+		text = "YOU OCO " + std::to_string(command.order.volume);
+		break;
+	}
+	case UserCommand::Kind::BRACKET: {
+		command.bracket.entry.origin = OrderOrigin::USER;
+		std::shared_ptr<OrderGroup> group = (user != nullptr) ? this->broker.submitBracket(command.bracket, user) : nullptr;
+		if (group != nullptr) { r.accepted = true; r.orderId = group->id; }
+		else { refused("refused"); }
+		text = "YOU bracket " + std::to_string(command.bracket.entry.volume);
+		break;
+	}
+	case UserCommand::Kind::CANCEL: {
+		logKind = LogEntry::Kind::CANCEL;
+		std::shared_ptr<Order> order = (user != nullptr) ? findUserOrder(*user, command.orderId) : nullptr;
+		if (order != nullptr) {
+			this->broker.cancel(order, user);
+			r.accepted = true;
+			r.orderId = order->id;
+		}
+		else { r.reason = "no working order " + command.orderId; }
+		text = "YOU cancel " + command.orderId;
+		break;
+	}
+	case UserCommand::Kind::REPLACE: {
+		std::shared_ptr<Order> order = (user != nullptr) ? findUserOrder(*user, command.orderId) : nullptr;
+		if (order == nullptr) { r.reason = "no working order " + command.orderId; }
+		else if (order->held) { r.reason = "a held stop cannot be replaced; cancel it and place another"; }
+		else {
+			std::shared_ptr<Order> replaced = this->broker.replace(order, user, command.price, command.volume);
+			if (replaced != nullptr) { r.accepted = true; r.orderId = replaced->id; }
+			else { refused("refused"); }
+		}
+		text = "YOU replace " + command.orderId;
+		break;
+	}
+	case UserCommand::Kind::SENTIMENT: {
+		double target = command.relative ? this->OB.marketNeutralSentiment + command.value : command.value;
+		this->OB.marketNeutralSentiment = std::clamp(target, -1.0, 1.0);
+		r.accepted = true;
+		text = "MARKET SENTIMENT " + std::to_string(this->OB.marketNeutralSentiment);
+		logKind = LogEntry::Kind::HOLD;
+		break;
+	}
+	}
+
+	// Whatever it triggered -- a stop it crossed, a margin call -- acted on now, as after any
+	// agent's turn
+	this->broker.processTriggers();
+
+	command.appliedAtMs = now;
+	this->userCommandLog.push_back(std::move(command));
+	if (this->onLog) {
+		this->onLog({ logKind, now, text + (r.accepted ? (r.orderId.empty() ? "" : " " + r.orderId) : ", refused: " + r.reason) });
+	}
+	if (this->onUserResult) { this->onUserResult(r); }
 }
 
 // ---- Session Functions ----

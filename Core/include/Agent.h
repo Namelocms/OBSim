@@ -492,6 +492,12 @@ public:
 	* just unoccupied between incarnations.
 	*/
 	bool isTransient = false;
+	/* The person at the keyboard (OrderModelPlan Step 4.2). Never scheduled, never in
+	*  OrderBook::agents, counted in no population; acts only through UserCommands. */
+	bool isUser = false;
+	/* Only for the user: true when their money is scaled to the market like every agent's,
+	*  false when it is dollars as entered (Account::moneyScale) */
+	bool userScaledMoney = true;
 	/* Which incarnation of this slot is currently live, bumped by every reroll
 	*
 	* An agent id is reused, so this is what distinguishes one occupant of a slot from the

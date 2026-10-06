@@ -219,6 +219,9 @@ public:
 	*  sells by their high, lowest first; buys by their low, highest first */
 	std::multimap<double, std::string> trailingSells;
 	std::multimap<double, std::string, std::greater<double>> trailingBuys;
+	/* Why the last submit, replace, OCO or bracket was refused, in words a customer can act on
+	*  (OrderModelPlan Step 4.2). Cleared when each of those starts; empty after a success. */
+	std::string refusal;
 
 	Broker(OrderBook& ob, MatchingEngine& me);
 
@@ -230,6 +233,8 @@ public:
 	* remainder, a FOK that could not fill, or killed by self trade protection).
 	*/
 	std::shared_ptr<Order> submit(const OrderRequest& request, const std::shared_ptr<Agent>& agent);
+	/* Record a refusal's reason and refuse: nullptr, for any of the entry points */
+	std::nullptr_t refuse(const char* why) { this->refusal = why; return nullptr; }
 	/* Cancel a resting order on its owner's behalf, returning its escrow */
 	void cancel(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent);
 	/* Change a resting limit order's price and/or size, under exchange priority rules

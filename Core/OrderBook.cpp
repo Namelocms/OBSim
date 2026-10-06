@@ -24,7 +24,10 @@ void OrderBook::upsertAgent(std::shared_ptr<Agent> agent) {
 }
 std::shared_ptr<Agent> OrderBook::getAgent(const std::string& agentId) const {
 	auto found = this->agents.find(agentId);
-	if (found == this->agents.end()) { return nullptr; }
+	if (found == this->agents.end()) {
+		if (this->user != nullptr && this->user->id == agentId) { return this->user; }
+		return nullptr;
+	}
 	return found->second;
 }
 bool OrderBook::agentHasRestingOrders(const std::string& agentId) const {
@@ -310,6 +313,8 @@ void OrderBook::resetToInitial(double initialPrice, unsigned int shareFloat, boo
 		this->nextOrderId = 1;
 		this->nextAgentId = 1;
 		this->agents.clear();
+		this->user.reset();
+		this->userFills.clear();
 	}
 }
 

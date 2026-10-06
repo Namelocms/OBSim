@@ -97,6 +97,11 @@ double buyingPower(const Agent& agent);
 /* Margin on, and this account has the FINRA minimum equity (in unit dollars) to borrow? */
 bool hasMarginPrivileges(const Agent& agent);
 
+/* Sim dollars per real-world dollar for this account: what rules written in real dollars (the
+*  $2,000 margin minimum, a broker's rate tiers) are scaled by. Every agent's money is scaled
+*  to the market (OrderBook::cashScale); the user's is too, unless they chose absolute dollars. */
+double moneyScale(const Agent& agent);
+
 /* Can this stock be bought on margin at this price? */
 bool isMarginable(double price);
 

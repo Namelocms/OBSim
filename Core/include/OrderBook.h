@@ -147,6 +147,29 @@ public:
 	/* Unit-dollars-to-money multiplier for this run, mirrored from CoreSim::cashScale so the
 	*  account rules can test a dollar threshold against the person an agent stands for */
 	double cashScale = 1.0;
+	/* The user's account, when the run has one (OrderModelPlan Step 4.2). Deliberately NOT in
+	*  `agents`: everything that walks the population -- sweeps, schedules, participation --
+	*  leaves it alone without being told, and an idle account cannot reorder the map the
+	*  population is drawn from. getAgent finds it, so matching and settlement treat it exactly
+	*  like any other account. */
+	std::shared_ptr<Agent> user;
+	/* The user's broker, from the preset chosen at reset */
+	FeeSchedule userFees;
+	/* One of the user's executions, recorded as it settles, for a frontend to drain */
+	struct UserFill {
+		double timeMs = 0.0;
+		std::string orderId;
+		OrderAction side = OrderAction::BID;
+		double price = 0.0;
+		unsigned int volume = 0;
+		/* What this leg charged in fees, in cents as charged; negative for a net rebate */
+		double fee = 0.0;
+		/* Provided liquidity rather than took it; a cross has neither */
+		bool maker = false;
+		bool auction = false;
+		bool shortSale = false;
+	};
+	std::vector<UserFill> userFills;
 
 	// ---- Trigger pump inputs (OrderModelPlan Step 1.2) ----
 

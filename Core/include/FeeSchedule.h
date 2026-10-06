@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <string>
 
 /* ---- Fee schedule ----
 *
@@ -23,9 +24,9 @@
 */
 struct FeeSchedule {
 	/* Shown in a preset list, and in logs */
-	const char* name = "none";
+	std::string name = "none";
 	/* Date the published figures below were checked. Fee schedules go stale. */
-	const char* asOf = "";
+	std::string asOf = "";
 
 	// ---- Broker commission ----
 	double commissionPerShare = 0.0;
@@ -53,14 +54,30 @@ struct FeeSchedule {
 	double tafPerShare = 0.0;
 	/* FINRA TAF cap per trade */
 	double tafMaxPerTrade = 0.0;
+	/* Consolidated Audit Trail fee per share, on BOTH sides of every trade, where a broker
+	*  passes it through (OrderModelPlan Step 4.2; Moomoo publishes one). 0 for none. */
+	double catPerShare = 0.0;
 
 	// ---- Margin terms (OrderModelPlan Step 1.2) ----
 	//
 	// The broker's, not the regulator's: FINRA sets a floor, brokers lend on their own terms.
 	// Read whenever margin is switched on, whether or not fees are being charged.
 
-	/* Annual interest on a margin debit balance, accrued daily on a 360 day year */
+	/* Annual interest on a margin debit balance, accrued daily on a 360 day year. The rate
+	*  for every balance when there are no tiers below. */
 	double marginApr = 0.0;
+
+	/* Published brokers price margin by debit balance (OrderModelPlan Step 4.2). A tier runs
+	*  from its threshold, in real-world dollars, up to the next one. Most charge the WHOLE
+	*  balance at the rate of the tier it falls in; a blended schedule charges each slice of
+	*  the balance at its own tier's rate. */
+	static constexpr int MAX_MARGIN_TIERS = 8;
+	int marginTierCount = 0;
+	double marginTierFrom[MAX_MARGIN_TIERS] = {};
+	double marginTierApr[MAX_MARGIN_TIERS] = {};
+	bool marginTiersBlended = false;
+	/* Real-world dollars of debit carried interest-free (a subscription perk) */
+	double marginInterestFree = 0.0;
 	/* The broker's maintenance requirement on longs, when it is above FINRA's 25% floor */
 	double houseMaintenance = 0.0;
 
@@ -82,6 +99,32 @@ struct FeeSchedule {
 		if (!this->passThroughExchangeFees) { return 0.0; }
 		return (price >= 1.0) ? this->makerRebatePerShare : this->subDollarMakerRebatePct * price;
 	}
+	/* A year's interest on a debit, in real-world dollars, as an amount (not a rate)
+	*
+	* Without tiers it is marginApr on the whole debit, exactly as before tiers existed. The
+	* interest-free amount comes off the top. */
+	double annualInterest(double debit) const {
+		double charged = (std::max)(0.0, debit - this->marginInterestFree);
+		if (charged <= 0.0) { return 0.0; }
+		if (this->marginTierCount <= 0) { return charged * this->marginApr; }
+		if (!this->marginTiersBlended) {
+			double apr = this->marginTierApr[0];
+			for (int i = 0; i < this->marginTierCount; ++i) {
+				if (debit >= this->marginTierFrom[i]) { apr = this->marginTierApr[i]; }
+			}
+			return charged * apr;
+		}
+		// Blended: each slice of the balance at its own tier's rate
+		double total = 0.0;
+		for (int i = 0; i < this->marginTierCount; ++i) {
+			double lo = (std::max)(this->marginTierFrom[i], this->marginInterestFree);
+			double hi = (i + 1 < this->marginTierCount) ? this->marginTierFrom[i + 1] : debit;
+			hi = (std::min)(hi, debit);
+			if (hi > lo) { total += (hi - lo) * this->marginTierApr[i]; }
+		}
+		return total;
+	}
+
 	/* TAF on an order that has sold `shares` in total so far */
 	double taf(unsigned int shares) const {
 		double t = this->tafPerShare * shares;
@@ -93,7 +136,7 @@ struct FeeSchedule {
 	* limit. A buy pays no regulatory fees. Rebates only lower it, so they are ignored.
 	*/
 	double worstCaseBuyFees(unsigned int shares, double price) const {
-		return this->commission(shares, shares * price) + this->takerFee(price) * shares;
+		return this->commission(shares, shares * price) + (this->takerFee(price) + this->catPerShare) * shares;
 	}
 	/* Per-share and fixed parts of what buying costs in fees, for sizing an order
 	*
@@ -101,7 +144,7 @@ struct FeeSchedule {
 	* counted as fixed, and the cap is ignored, so an order sized against this can always
 	* carry its worst-case fees.
 	*/
-	double buyFeePerShare(double price) const { return this->commissionPerShare + this->takerFee(price); }
+	double buyFeePerShare(double price) const { return this->commissionPerShare + this->takerFee(price) + this->catPerShare; }
 	double buyFeeFixed() const { return this->commissionPerOrder + this->commissionMin; }
 
 	/* ---- Presets ----

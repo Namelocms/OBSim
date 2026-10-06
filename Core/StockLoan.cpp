@@ -24,6 +24,9 @@ double StockLoan::feeRate(double utilisation) {
 }
 
 double StockLoan::contributionOf(const Agent& agent) {
+	// The user's shares are not lent: the daily rebuild walks the population, which the user
+	// is not part of, so a contribution would come and go with each trade
+	if (agent.isUser) { return 0.0; }
 	double held = double(Account::longShares(agent));
 	if (held <= 0.0) { return 0.0; }
 	if (agent.type == AgentType::INSTITUTION) { return held * INST_LENDABLE_FRACTION; }

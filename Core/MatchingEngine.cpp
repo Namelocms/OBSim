@@ -281,6 +281,8 @@ void MatchingEngine::chargeFees(Order& order, Agent& agent, bool isMaker, double
 		regulatory = fees.secFeeRate * price * volume + (tafTotal - order.tafAccrued);
 		order.tafAccrued = tafTotal;
 	}
+	// The audit trail's fee falls on both sides, where the broker passes it on
+	if (fees.catPerShare > 0.0) { regulatory += fees.catPerShare * volume; }
 
 	double accrued = commission + exchange + regulatory;
 	order.feeAccrued += accrued;
@@ -342,8 +344,25 @@ void MatchingEngine::afterFill(Order& taker, Agent& takerAgent, Order& maker, Ag
 	if (!maker.groupId.empty()) { this->OB.groupEvents.push_back({ GroupEvent::Type::FILL, maker.groupId, maker.id, volume }); }
 
 	// Fees, once per side of every leg: the taker took liquidity, the maker made it
+	const double takerCharged = taker.feeCharged, makerCharged = maker.feeCharged;
 	this->chargeFees(taker, takerAgent, false, price, volume, auction);
 	this->chargeFees(maker, makerAgent, true, price, volume, auction);
+	// The user's side of it, for their blotter (OrderModelPlan Step 4.2)
+	if (takerAgent.isUser || makerAgent.isUser) {
+		const bool userTook = takerAgent.isUser;
+		const Order& mine = userTook ? taker : maker;
+		OrderBook::UserFill fill;
+		fill.timeMs = (this->OB.clock != nullptr) ? this->OB.clock->simTimeMs : 0.0;
+		fill.orderId = mine.id;
+		fill.side = mine.side;
+		fill.price = price;
+		fill.volume = volume;
+		fill.fee = mine.feeCharged - (userTook ? takerCharged : makerCharged);
+		fill.maker = !userTook && !auction;
+		fill.auction = auction;
+		fill.shortSale = mine.isShortSale();
+		this->OB.userFills.push_back(fill);
+	}
 	// A bid that just closed has no further use for what is left of its fee reserve
 	if (maker.status == OrderStatus::CLOSED && maker.side == OrderAction::BID) { Account::releaseFeeReserve(makerAgent, maker); }
 	if (auction && taker.volume == 0 && taker.side == OrderAction::BID) { Account::releaseFeeReserve(takerAgent, taker); }

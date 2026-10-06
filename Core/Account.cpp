@@ -80,8 +80,12 @@ double buyingPower(const Agent& agent) {
 
 bool hasMarginPrivileges(const Agent& agent) {
 	if (!agent.OB.features.margin.enabled) { return false; }
-	double scale = (agent.OB.cashScale > 0.0) ? agent.OB.cashScale : 1.0;
-	return equity(agent, agent.OB.currentPrice) / scale >= MARGIN_MIN_EQUITY;
+	return equity(agent, agent.OB.currentPrice) / moneyScale(agent) >= MARGIN_MIN_EQUITY;
+}
+
+double moneyScale(const Agent& agent) {
+	if (agent.isUser && !agent.userScaledMoney) { return 1.0; }
+	return (agent.OB.cashScale > 0.0) ? agent.OB.cashScale : 1.0;
 }
 
 bool isMarginable(double price) {
@@ -214,6 +218,8 @@ unsigned int liquidationShares(const Agent& agent, double price) {
 }
 
 const FeeSchedule& feeSchedule(const Agent& agent) {
+	// The user's own broker, from the preset they chose
+	if (agent.isUser) { return agent.OB.userFees; }
 	const Features::Fees& fees = agent.OB.features.fees;
 	return (agent.type == AgentType::INSTITUTION) ? fees.institution : fees.retail;
 }

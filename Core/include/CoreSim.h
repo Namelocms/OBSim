@@ -8,6 +8,8 @@
 #include <thread>
 #include <functional>
 #include <atomic>
+#include <mutex>
+#include <unordered_map>
 
 #include "OrderBook.h"
 #include "MatchingEngine.h"
@@ -119,17 +121,76 @@ struct BackDataProgress {
 struct EventCall {
     double callTime;
     std::string agentId;
-    /* Agent event generation this call was created with, stale calls are discarded on pop */
+    /* Agent event generation this call was created with, stale calls are discarded on pop.
+    *  For a user command, the command's id instead. */
     unsigned long long generation = 0;
+    /* A user command, not an agent's turn (OrderModelPlan Step 4.2) */
+    bool user = false;
 };
 
-/* Closest call time is first in queue */
+/* Closest call time is first in queue. At the same time an agent's turn comes before a user
+*  command, so where a command lands among simultaneous events never depends on the heap. */
 struct CompareEventCalls {
 public:
     bool operator()(const EventCall& e1, const EventCall& e2) {
-        return e1.callTime > e2.callTime;
+        if (e1.callTime != e2.callTime) { return e1.callTime > e2.callTime; }
+        return e1.user && !e2.user;
     }
 };
+
+/* What the user asked for, through a frontend (OrderModelPlan Step 4.2)
+*
+* Commands are events: the frontend posts one, the sim thread stamps it with the sim time it
+* takes it up and puts it in the same queue agents' turns wait in, and it is applied when the
+* queue reaches it, through the same broker. Every intervention in a run is one of these, so
+* the applied list (CoreSim::userCommandLog) is everything needed to replay the run.
+*/
+struct UserCommand {
+    enum class Kind { ORDER, OCO, BRACKET, CANCEL, REPLACE, SENTIMENT };
+    Kind kind = Kind::ORDER;
+    /* Assigned on post, in order */
+    unsigned long long id = 0;
+    /* The frontend's own correlation id, echoed in the result */
+    std::string requestId;
+    /* ORDER; the limit leg of an OCO */
+    OrderRequest order{ OrderAction::BID, OrderType::LIMIT };
+    /* The stop leg of an OCO */
+    OrderRequest stopLeg{ OrderAction::BID, OrderType::MARKET };
+    BracketRequest bracket;
+    /* CANCEL and REPLACE: the order they act on */
+    std::string orderId;
+    double price = 0.0;
+    unsigned int volume = 0;
+    /* SENTIMENT: the market-neutral sentiment to set, or with `relative` to move it by */
+    double value = 0.0;
+    bool relative = false;
+    /* The sim time it was applied at, -1 until then */
+    double appliedAtMs = -1.0;
+};
+
+struct UserCommandResult {
+    unsigned long long id = 0;
+    std::string requestId;
+    UserCommand::Kind kind = UserCommand::Kind::ORDER;
+    bool accepted = false;
+    /* The order (or group) it made or acted on */
+    std::string orderId;
+    /* Why it was refused, in words the user can act on */
+    std::string reason;
+    double atMs = 0.0;
+};
+
+/* The user's account, as chosen at reset */
+struct UserAccountConfig {
+    bool enabled = false;
+    /* In real-world dollars when scaled, sim dollars when not */
+    double cash = 25000.0;
+    /* Scaled to the market like every agent's money (Account::moneyScale), or as entered */
+    bool scaled = true;
+    FeeSchedule fees = FeeSchedule::zeroCommissionRetail();
+};
+
+inline const char* USER_ACCOUNT_ID = "USER";
 
 class CoreSim {
 public:
@@ -176,6 +237,23 @@ public:
     /* True when the last back-data run was cut short by a safety cap or a cancel */
     bool backDataAborted = false;
 
+    // ---- The user (OrderModelPlan Step 4.2) ----
+
+    /* Whether the run has a user account, and its terms. Read at the live handoff. */
+    UserAccountConfig userConfig;
+    /* Every command applied this run, in order, with the sim time it was applied at */
+    std::vector<UserCommand> userCommandLog;
+    /* Each command's outcome, on the sim thread, as it is applied (or refused unapplied) */
+    std::function<void(const UserCommandResult&)> onUserResult;
+    /* Hand a command to the sim thread. Safe from any thread. Refused straight away when
+    *  there is no live market to apply it to (no account, back data still running). */
+    void postUserCommand(UserCommand command);
+    /* Move posted commands into the event queue at the current sim time. Sim thread only.
+    *  True when it queued any. */
+    bool takeUserCommands(double nowMs);
+    /* Apply one queued command now. Sim thread only. */
+    void applyUserCommand(unsigned long long commandId);
+
     // ---- Main Simulation Loop ----
 
     void run(SimClock& clock);
@@ -210,6 +288,9 @@ public:
     * caller must re-read the top of the queue rather than reusing it.
     */
     bool processSessionBoundaries(double targetSimTimeMs, SimClock& clock);
+    /* Open the user's account at the live handoff, when the run has one. Draws nothing from
+    *  the random stream, so an idle account leaves the market exactly as it would have been. */
+    void openUserAccount();
     /* A new trading day at the premarket open: pin the short sale restriction's reference
     *  close, and report a restriction this open lifts. Both boundary paths come through here. */
     void openTradingDay(double atMs);
@@ -364,6 +445,13 @@ public:
     );
 
 private:
+    /* Posted user commands not yet taken up by the sim thread */
+    std::mutex userInboxMtx;
+    std::vector<UserCommand> userInbox;
+    unsigned long long nextUserCommandId = 1;
+    /* Taken up, waiting in the event queue */
+    std::unordered_map<unsigned long long, UserCommand> queuedUserCommands;
+    void refuseUserCommand(const UserCommand& command, const std::string& reason, double atMs);
     /* Drive the event queue forward to targetMs with no wall clock pacing
     *
     * Returns false when a safety cap tripped or a cancel was requested, true on

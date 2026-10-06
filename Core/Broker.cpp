@@ -19,8 +19,9 @@
 Broker::Broker(OrderBook& ob, MatchingEngine& me) : OB(ob), ME(me) {}
 
 std::shared_ptr<Order> Broker::submit(const OrderRequest& request, const std::shared_ptr<Agent>& agent) {
-	if (agent == nullptr || request.empty()) { return nullptr; }
-	if (request.side != OrderAction::BID && request.side != OrderAction::ASK) { return nullptr; }
+	this->refusal.clear();
+	if (agent == nullptr || request.empty()) { return this->refuse("empty order"); }
+	if (request.side != OrderAction::BID && request.side != OrderAction::ASK) { return this->refuse("an order must be a buy or a sell"); }
 
 	// Measurement only, see BrokerStats. Read straight off the front of each set: a stale
 	// cancelled order sitting there skews a sample slightly and changes nothing.
@@ -41,13 +42,13 @@ std::shared_ptr<Order> Broker::placeTagged(const OrderRequest& request, const st
 std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::shared_ptr<Agent>& agent, const std::string& groupId) {
 
 	const bool isLimit = (request.type == OrderType::LIMIT);
-	if (isLimit && !(request.price > 0.0)) { return nullptr; }
-	if ((request.sessions & SESSIONS_ALL) == 0) { return nullptr; }
+	if (isLimit && !(request.price > 0.0)) { return this->refuse("a limit order needs a positive limit price"); }
+	if ((request.sessions & SESSIONS_ALL) == 0) { return this->refuse("an order must be allowed to trade in some session"); }
 	// Every flag needs a price to mean anything: a hidden market order, a reserve market order
 	// or a market peg is not an order a venue accepts
 	const bool flagged = request.postOnly || request.hidden || request.displayQty > 0 || request.midpointPeg;
-	if (flagged && !isLimit) { return nullptr; }
-	if (request.midpointPeg && (request.hidden || request.displayQty > 0)) { return nullptr; }
+	if (flagged && !isLimit) { return this->refuse("post-only, hidden, reserve and midpoint flags need a limit order"); }
+	if (request.midpointPeg && (request.hidden || request.displayQty > 0)) { return this->refuse("a midpoint peg cannot also be hidden or reserve"); }
 
 	// ---- Time in force ----
 	//
@@ -55,20 +56,20 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 	// order loses nothing by that. FOK is refused rather than coerced: silently turning
 	// "all of it or none" into IOC would hand back a partial fill nobody agreed to.
 	const double nowMs = this->OB.clock->simTimeMs;
-	if (!isLimit && request.tif == TimeInForce::FOK) { return nullptr; }
+	if (!isLimit && request.tif == TimeInForce::FOK) { return this->refuse("fill-or-kill needs a limit order"); }
 
 	// On-open and on-close orders wait for their cross (OrderModelPlan Step 3.1). An on-open
 	// order is taken any time before the open; an on-close one until the 15:50 cutoff.
 	const bool auction = (request.tif == TimeInForce::OPG || request.tif == TimeInForce::CLS);
 	if (auction) {
-		if (!this->OB.features.auctions.enabled) { return nullptr; }
-		if (request.tif == TimeInForce::OPG && this->OB.session == Session::REGULAR) { return nullptr; }
+		if (!this->OB.features.auctions.enabled) { return this->refuse("on-open and on-close orders need the opening and closing crosses switched on"); }
+		if (request.tif == TimeInForce::OPG && this->OB.session == Session::REGULAR) { return this->refuse("on-open orders are not accepted once the regular session has opened"); }
 		if (request.tif == TimeInForce::CLS) {
 			Session s = this->OB.session;
-			if (s != Session::PREMARKET && s != Session::REGULAR) { return nullptr; }
+			if (s != Session::PREMARKET && s != Session::REGULAR) { return this->refuse("on-close orders are accepted only in the premarket and the regular session"); }
 			double close = MarketCalendar::sessionOpenMs(Session::REGULAR, MarketCalendar::dayIndex(nowMs))
 				+ MarketCalendar::sessionLengthMs(Session::REGULAR);
-			if (nowMs >= close - MarketCalendar::minutesToMs(CLOSE_ORDER_CUTOFF_MINUTES)) { return nullptr; }
+			if (nowMs >= close - MarketCalendar::minutesToMs(CLOSE_ORDER_CUTOFF_MINUTES)) { return this->refuse("on-close orders are not accepted after the 15:50 cutoff"); }
 		}
 	}
 	// A market buy waiting for a cross is escrowed at its collar, which is also the most it pays
@@ -88,14 +89,14 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 		bool takesPeg = mid > 0.0 && !pegs.empty()
 			&& ((request.side == OrderAction::BID) ? request.price >= mid : request.price <= mid);
 		if (takesPeg || this->ME.fillableVolume(std::make_shared<Order>(probe)) > 0) {
-			if (!request.postOnlyReprice) { ++this->stats.postOnlyRefused; return nullptr; }
+			if (!request.postOnlyReprice) { ++this->stats.postOnlyRefused; return this->refuse("post-only: the order would take liquidity"); }
 			double best = -1.0;
 			if (request.side == OrderAction::BID) { for (const auto& o : this->OB.askQueue) { if (o->status == OrderStatus::OPEN) { best = o->price; break; } } }
 			else { for (const auto& o : this->OB.bidQueue) { if (o->status == OrderStatus::OPEN) { best = o->price; break; } } }
-			if (!(best > 0.0)) { return nullptr; }
+			if (!(best > 0.0)) { return this->refuse("post-only: no opposite order to price passive of"); }
 			double tick = (best < 1.00) ? 0.0001 : 0.01;
 			limitPrice = roundTo((request.side == OrderAction::BID) ? best - tick : best + tick, tick);
-			if (!(limitPrice > 0.0)) { return nullptr; }
+			if (!(limitPrice > 0.0)) { return this->refuse("post-only: no valid passive price"); }
 			++this->stats.postOnlyRepriced;
 		}
 	}
@@ -112,7 +113,7 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 			nowMs + MarketCalendar::minutesToMs(GTC_MAX_DAYS * MarketCalendar::TOTAL_MINUTES_PER_DAY), request.sessions);
 		break;
 	case TimeInForce::GTD:
-		if (isLimit && !(request.expiresAtMs > nowMs)) { return nullptr; }
+		if (isLimit && !(request.expiresAtMs > nowMs)) { return this->refuse("good-till-date needs an expiry in the future"); }
 		expiresAtMs = isLimit ? request.expiresAtMs : 0.0;
 		break;
 	case TimeInForce::IOC:
@@ -146,7 +147,7 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 				double worst = Account::feeSchedule(*agent).worstCaseBuyFees(request.volume, bidPrice);
 				feeReserve = std::ceil(worst / CASH_PRECISION - 1e-9) * CASH_PRECISION;
 			}
-			if (!covering && escrow + feeReserve > Account::buyingPower(*agent) + CASH_PRECISION) { return nullptr; }
+			if (!covering && escrow + feeReserve > Account::buyingPower(*agent) + CASH_PRECISION) { return this->refuse("not enough buying power"); }
 			agent->updateCash(-escrow);
 			if (feeReserve > 0.0) { agent->updateCash(-feeReserve); }
 		}
@@ -157,29 +158,29 @@ std::shared_ptr<Order> Broker::place(const OrderRequest& request, const std::sha
 		// An ask reserves the shares it is selling, so they cannot be sold twice. Never both,
 		// from this side: while a short sale is working, the account's shares are already
 		// spoken for -- that sale sells them first when it fills (MatchingEngine::openShort)
-		if (Account::pendingShortShares(*agent) > 0) { return nullptr; }
-		if (request.volume > agent->getTotalHoldings()) { return nullptr; }
+		if (Account::pendingShortShares(*agent) > 0) { return this->refuse("a short sale is working: those shares are already spoken for"); }
+		if (request.volume > agent->getTotalHoldings()) { return this->refuse("not enough shares to sell"); }
 		reserved = agent->removeHoldings(int(request.volume));
 	}
 	else {
 		// A short sale. Never both: an account holding shares sells them first. It needs margin
 		// for the new short, and either a locate or a market maker's exemption.
-		if (!Account::shortingEnabled(*agent) || Account::longShares(*agent) > 0) { return nullptr; }
+		if (!Account::shortingEnabled(*agent) || Account::longShares(*agent) > 0) { return this->refuse("short selling is not available for this account, or the account still holds shares"); }
 		// Rule 201 in force: a short sale may not execute or display at or below the best bid,
 		// market makers included. A market order cannot promise that, so it is refused; a limit
 		// at or under the bid is repriced a tick above it.
 		if (this->OB.ssrActive(nowMs)) {
-			if (!isLimit && !auction) { ++this->stats.ssrRefused; return nullptr; }
+			if (!isLimit && !auction) { ++this->stats.ssrRefused; return this->refuse("short sale restriction: a short market order is not accepted"); }
 			if (isLimit) {
 				double floor = this->ssrFloor();
 				if (floor > 0.0 && limitPrice < floor - 1e-12) { limitPrice = floor; ++this->stats.ssrRepriced; }
 			}
 		}
-		if (request.volume > Account::shortCapacity(*agent)) { return nullptr; }
+		if (request.volume > Account::shortCapacity(*agent)) { return this->refuse("not enough margin for the short sale"); }
 		if (request.mark == SaleMark::SHORT_EXEMPT) {
-			if (!Account::isExemptMarketMaker(*agent)) { return nullptr; }
+			if (!Account::isExemptMarketMaker(*agent)) { return this->refuse("only a market maker may sell short exempt"); }
 		}
-		else if (!this->OB.lending.locate(request.volume)) { return nullptr; }
+		else if (!this->OB.lending.locate(request.volume)) { return this->refuse("no shares available to borrow"); }
 	}
 
 	std::shared_ptr<Order> order = std::make_shared<Order>(
@@ -250,14 +251,15 @@ void Broker::cancel(const std::shared_ptr<Order>& order, const std::shared_ptr<A
 
 std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, const std::shared_ptr<Agent>& agent,
 	double newPrice, unsigned int newVolume) {
+	this->refusal.clear();
 
-	if (order == nullptr || agent == nullptr || order->agentId != agent->id) { return nullptr; }
-	if (order->status != OrderStatus::OPEN || order->type != OrderType::LIMIT) { return nullptr; }
-	if (newVolume == 0 || !(newPrice > 0.0)) { return nullptr; }
+	if (order == nullptr || agent == nullptr || order->agentId != agent->id) { return this->refuse("not an order of this account"); }
+	if (order->status != OrderStatus::OPEN || order->type != OrderType::LIMIT) { return this->refuse("only an open limit order can be replaced"); }
+	if (newVolume == 0 || !(newPrice > 0.0)) { return this->refuse("a replace needs a positive price and size"); }
 
 	const bool isBid = (order->side == OrderAction::BID);
 	const auto& resting = isBid ? agent->activeBids : agent->activeAsks;
-	if (resting.find(order->id) == resting.end()) { return nullptr; }
+	if (resting.find(order->id) == resting.end()) { return this->refuse("the order is no longer resting"); }
 
 	const unsigned int oldVolume = order->volume;
 	const double oldPrice = order->price;
@@ -275,7 +277,7 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 	if (isBid) {
 		if (newEscrow + newReserve > Account::buyingPower(*agent) + oldEscrow + order->feeReserve + CASH_PRECISION) {
 			++this->stats.replacesRefused;
-			return nullptr;
+			return this->refuse("not enough buying power for the replacement");
 		}
 	}
 	else if (order->isShortSale()) {
@@ -287,7 +289,7 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 			unsigned int more = newVolume - oldVolume;
 			bool carried = more <= Account::shortCapacity(*agent)
 				&& (order->mark == SaleMark::SHORT_EXEMPT || this->OB.lending.locate(more));
-			if (!carried) { ++this->stats.replacesRefused; return nullptr; }
+			if (!carried) { ++this->stats.replacesRefused; return this->refuse("the larger short sale cannot be located or margined"); }
 		}
 		else if (order->mark == SaleMark::SHORT) { this->OB.lending.releaseLocate(oldVolume - newVolume); }
 	}
@@ -295,7 +297,7 @@ std::shared_ptr<Order> Broker::replace(const std::shared_ptr<Order>& order, cons
 		&& ((newVolume - oldVolume) > agent->getTotalHoldings() || Account::pendingShortShares(*agent) > 0)) {
 		// More shares for a long sale, which a working short sale has a prior claim on
 		++this->stats.replacesRefused;
-		return nullptr;
+		return this->refuse("not enough shares for the larger sale");
 	}
 
 	++this->stats.replaces;
@@ -388,7 +390,7 @@ double Broker::trailingTrigger(const Order& order, double extreme) {
 }
 
 std::shared_ptr<Order> Broker::hold(const OrderRequest& request, const std::shared_ptr<Agent>& agent, bool reserveShares) {
-	if (request.side != OrderAction::BID && request.side != OrderAction::ASK) { return nullptr; }
+	if (request.side != OrderAction::BID && request.side != OrderAction::ASK) { return this->refuse("an order must be a buy or a sell"); }
 	const bool sell = (request.side == OrderAction::ASK);
 	const bool trailing = request.trailAmount > 0.0 || request.trailPercent > 0.0;
 	const double now = this->OB.clock->simTimeMs;
@@ -396,10 +398,10 @@ std::shared_ptr<Order> Broker::hold(const OrderRequest& request, const std::shar
 
 	// A stop-limit needs its limit, and a stop lives until its time in force says otherwise:
 	// IOC and FOK mean nothing for an order that waits by design
-	if (request.type == OrderType::LIMIT && !(request.price > 0.0)) { return nullptr; }
-	if (request.tif == TimeInForce::IOC || request.tif == TimeInForce::FOK) { return nullptr; }
-	if ((request.sessions & SESSIONS_ALL) == 0) { return nullptr; }
-	if (trailing && request.trailPercent >= 1.0) { return nullptr; }
+	if (request.type == OrderType::LIMIT && !(request.price > 0.0)) { return this->refuse("a stop-limit needs a positive limit price"); }
+	if (request.tif == TimeInForce::IOC || request.tif == TimeInForce::FOK) { return this->refuse("a stop cannot be immediate-or-cancel or fill-or-kill"); }
+	if ((request.sessions & SESSIONS_ALL) == 0) { return this->refuse("an order must be allowed to trade in some session"); }
+	if (trailing && request.trailPercent >= 1.0) { return this->refuse("a trailing percentage must be under 100%"); }
 
 	// A protective stop: sells come out of a long position, which they reserve, and must sit
 	// below the market; buys sit above it. A stop already through the market would simply be
@@ -411,18 +413,18 @@ std::shared_ptr<Order> Broker::hold(const OrderRequest& request, const std::shar
 		probe.trailPercent = request.trailPercent;
 		trigger = trailingTrigger(probe, last);
 	}
-	if (!(trigger > 0.0)) { return nullptr; }
-	if (sell ? !(trigger < last) : !(trigger > last)) { return nullptr; }
+	if (!(trigger > 0.0)) { return this->refuse("the stop needs a positive trigger"); }
+	if (sell ? !(trigger < last) : !(trigger > last)) { return this->refuse("the stop is already through the market: a sell stop must be below it, a buy stop above"); }
 
 	std::vector<Holding> reserved;
 	if (sell) {
-		if (request.mark != SaleMark::LONG) { return nullptr; }
+		if (request.mark != SaleMark::LONG) { return this->refuse("a sell stop protects a long position; it cannot be a short sale"); }
 		// A leg sharing an OCO sibling's reservation does not check holdings: the sibling holds
 		// the shares, and the group keeps the two the same size
 		if (reserveShares) {
 			// As for a long ask: shares a working short sale will sell are not free to reserve
-			if (Account::pendingShortShares(*agent) > 0) { return nullptr; }
-			if (request.volume > agent->getTotalHoldings()) { return nullptr; }
+			if (Account::pendingShortShares(*agent) > 0) { return this->refuse("a short sale is working: those shares are already spoken for"); }
+			if (request.volume > agent->getTotalHoldings()) { return this->refuse("not enough shares for the stop"); }
 			reserved = agent->removeHoldings(int(request.volume));
 		}
 	}
@@ -437,7 +439,7 @@ std::shared_ptr<Order> Broker::hold(const OrderRequest& request, const std::shar
 	default:
 		if (!(request.expiresAtMs > now)) {
 			for (Holding h : reserved) { agent->upsertHolding(h); }
-			return nullptr;
+			return this->refuse("good-till-date needs an expiry in the future");
 		}
 		expiresAtMs = request.expiresAtMs;
 		break;
@@ -878,12 +880,26 @@ void Broker::writeOffIfInsolvent(const std::shared_ptr<Agent>& agent) {
 void Broker::accrueMarginInterest() {
 	if (!this->OB.features.margin.enabled) { return; }
 	++this->stats.interestDays;
-	for (const auto& kv : this->OB.agents) {
-		const std::shared_ptr<Agent>& agent = kv.second;
+	// The user's account is not in the population map, so it is charged after the agents
+	std::vector<std::shared_ptr<Agent>> accounts;
+	accounts.reserve(this->OB.agents.size() + 1);
+	for (const auto& kv : this->OB.agents) { accounts.push_back(kv.second); }
+	if (this->OB.user != nullptr) { accounts.push_back(this->OB.user); }
+	for (const std::shared_ptr<Agent>& agent : accounts) {
 		if (agent == nullptr) { continue; }
 		double debit = Account::debitBalance(*agent);
 		if (debit <= 0.0) { continue; }
-		double interest = roundTo(debit * Account::feeSchedule(*agent).marginApr / 360.0);
+		// A flat schedule exactly as it always was; a tiered one priced in real-world dollars,
+		// since that is what its thresholds are written in
+		const FeeSchedule& schedule = Account::feeSchedule(*agent);
+		double interest = 0.0;
+		if (schedule.marginTierCount == 0 && schedule.marginInterestFree <= 0.0) {
+			interest = roundTo(debit * schedule.marginApr / 360.0);
+		}
+		else {
+			double scale = Account::moneyScale(*agent);
+			interest = roundTo(schedule.annualInterest(debit / scale) * scale / 360.0);
+		}
 		if (interest <= 0.0) { continue; }
 		agent->updateCash(-interest);
 		this->OB.ledger.marginInterest += interest;
@@ -913,6 +929,7 @@ void Broker::accrueBorrowFees() {
 		if (kv.second->borrowedShares > 0) { borrowers.push_back(kv.second); }
 		if (desk.institutionalContribution(kv.first) > 0.0) { lenders.push_back(kv.second); }
 	}
+	if (this->OB.user != nullptr && this->OB.user->borrowedShares > 0) { borrowers.push_back(this->OB.user); }
 	auto byId = [](const std::shared_ptr<Agent>& a, const std::shared_ptr<Agent>& b) { return a->id < b->id; };
 	std::sort(borrowers.begin(), borrowers.end(), byId);
 	std::sort(lenders.begin(), lenders.end(), byId);
@@ -963,9 +980,10 @@ std::shared_ptr<Order> Broker::holdShared(OrderRequest request, const std::share
 
 std::shared_ptr<OrderGroup> Broker::submitOco(const OrderRequest& limitLeg, const OrderRequest& stopLeg,
 	const std::shared_ptr<Agent>& agent) {
-	if (agent == nullptr) { return nullptr; }
-	if (limitLeg.isStop() || !stopLeg.isStop() || limitLeg.type != OrderType::LIMIT) { return nullptr; }
-	if (limitLeg.side != stopLeg.side || limitLeg.volume != stopLeg.volume || limitLeg.volume == 0) { return nullptr; }
+	this->refusal.clear();
+	if (agent == nullptr) { return this->refuse("no account"); }
+	if (limitLeg.isStop() || !stopLeg.isStop() || limitLeg.type != OrderType::LIMIT) { return this->refuse("an OCO pairs a limit order with a stop"); }
+	if (limitLeg.side != stopLeg.side || limitLeg.volume != stopLeg.volume || limitLeg.volume == 0) { return this->refuse("an OCO's two legs must be the same side and size"); }
 
 	auto group = std::make_shared<OrderGroup>();
 	group->id = "G-" + this->OB.makeId(ID_TYPE::ORDER).substr(2);
@@ -999,14 +1017,15 @@ std::shared_ptr<OrderGroup> Broker::submitOco(const OrderRequest& limitLeg, cons
 }
 
 std::shared_ptr<OrderGroup> Broker::submitBracket(const BracketRequest& request, const std::shared_ptr<Agent>& agent) {
-	if (agent == nullptr || request.entry.isStop()) { return nullptr; }
+	this->refusal.clear();
+	if (agent == nullptr || request.entry.isStop()) { return this->refuse("a bracket's entry cannot be a stop"); }
 	const bool longEntry = (request.entry.side == OrderAction::BID);
 	double ref = (request.entry.type == OrderType::LIMIT) ? request.entry.price : this->OB.currentPrice;
 	// A long bracket takes profit above and stops out below; a short one the other way round
 	bool shaped = longEntry
 		? (request.takeProfit > ref && request.stopLoss > 0.0 && request.stopLoss < ref)
 		: (request.takeProfit > 0.0 && request.takeProfit < ref && request.stopLoss > ref);
-	if (!shaped) { return nullptr; }
+	if (!shaped) { return this->refuse("a bracket's take-profit and stop-loss must sit either side of the entry"); }
 
 	auto group = std::make_shared<OrderGroup>();
 	group->id = "G-" + this->OB.makeId(ID_TYPE::ORDER).substr(2);
