@@ -1,0 +1,34 @@
+/* The user's account section of the reset dialog. Scoped under .account-settings. */
+
+.account-settings { margin: 14px 0 4px; padding-top: 10px; border-top: 1px solid var(--line); }
+.as-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.as-title { color: var(--accent); font-size: 12px; letter-spacing: 0.04em; margin-right: auto; }
+.as-toggle { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted); cursor: pointer; }
+
+.as-row { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+.as-label { flex: 0 0 150px; color: var(--muted); font-size: 11px; }
+.as-input {
+  flex: 1 1 auto;
+  background: #0b1016;
+  border: 1px solid var(--line);
+  color: var(--text);
+  font: 12px var(--mono);
+  padding: 4px 7px;
+  border-radius: 3px;
+  min-width: 0;
+}
+
+.as-modes { display: flex; flex-direction: column; gap: 5px; margin: 2px 0 9px; }
+.as-mode { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 6px; cursor: pointer; }
+.as-mode input { margin: 2px 0 0; }
+.as-mode-text { display: flex; flex-direction: column; gap: 1px; }
+.as-mode-label { font-size: 11px; }
+.as-mode-explain { font-size: 10px; color: var(--muted); line-height: 1.35; }
+
+.as-caption { font-size: 10px; line-height: 1.4; margin: -2px 0 4px 160px; }
+.as-summary { color: var(--text); }
+.as-verified { color: var(--up); }
+.as-unverified { color: var(--warn); }
+.as-notes { color: var(--muted); margin-top: 2px; }
+
+.as-off .as-row, .as-off .as-modes, .as-off .as-caption { opacity: 0.4; }

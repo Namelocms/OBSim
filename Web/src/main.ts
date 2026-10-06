@@ -1,5 +1,7 @@
 import './style.css';
 
+import { AccountPanel } from './account-panel';
+import { AccountSettings } from './account-settings';
 import { BarSeries, TIMEFRAMES } from './bars';
 import { PriceChart } from './chart';
 import { ChartOverlays } from './chart-overlays';
@@ -7,6 +9,8 @@ import { Connection, type ConnectionState } from './connection';
 import { FeatureSwitches } from './feature-switches';
 import { countOn, withDefaults } from './features';
 import { DepthLadder } from './ladder';
+import { OrderTicket } from './order-ticket';
+import { UserOrders } from './user-orders';
 import { BROKER_CHIPS, MARKET_CHIPS, StatusStrip } from './market-status';
 import {
   AgentTable, BackDataOverlay, Controls, EventLog, Header, ResetDialog,
@@ -85,6 +89,23 @@ const lower = document.createElement('div');
 lower.className = 'row lower';
 lower.append(agents.root, side);
 
+// The user's trading (OrderModelPlan Step 4.2): a column on the right, as order entry
+// usually sits. Hidden on a run without an account.
+const accountPanel = new AccountPanel();
+const ticket = new OrderTicket((order) => connection.send(order));
+const userOrders = new UserOrders((message) => connection.send(message));
+const accountSettings = new AccountSettings();
+
+const mainArea = document.createElement('div');
+mainArea.className = 'main-area';
+mainArea.append(upper, lower);
+const tradeColumn = document.createElement('div');
+tradeColumn.className = 'trade-column hidden';
+tradeColumn.append(accountPanel.root, ticket.root, userOrders.root);
+const workspace = document.createElement('div');
+workspace.className = 'workspace';
+workspace.append(mainArea, tradeColumn);
+
 // ---- state -----------------------------------------------------------------
 
 let hello: Hello | null = null;
@@ -121,13 +142,16 @@ const resetDialog = new ResetDialog((params) => {
   brokerStatus.clear();
   seenSequence = 0;
   gapCount = 0;
-  connection.send({ type: 'reset', params: { ...params, features: switches.read() } });
+  userOrders.clear();
+  connection.send({ type: 'reset', params: { ...params, features: switches.read(), user: accountSettings.read() } });
 });
+resetDialog.mount(accountSettings.root);
 resetDialog.mount(switches.root);
 
-/** Prefilled from what the server says is running, switches included */
+/** Prefilled from what the server says is running, switches and account included */
 function openReset(): void {
   switches.fill(hello?.params.features);
+  accountSettings.fill(hello?.params.user, hello?.presets ?? []);
   resetDialog.showFrom(hello);
 }
 
@@ -136,7 +160,7 @@ const backData = new BackDataOverlay(() => {
   openReset();
 });
 
-app.append(header.root, marketStatus.root, upper, lower, controls.root, resetDialog.root, backData.root);
+app.append(header.root, marketStatus.root, workspace, controls.root, resetDialog.root, backData.root);
 controls.setTimeframe(timeframeIndex);
 
 function setTimeframe(index: number): void {
@@ -172,6 +196,7 @@ function onMessage(msg: ServerMessage): void {
       marketStatus.setFeatures(features);
       brokerStatus.setFeatures(features);
       agents.setColumns(rosterColumns(features));
+      tradeColumn.classList.toggle('hidden', !msg.params.user?.enabled);
       const on = countOn(features);
       chartNote.textContent =
         `seed ${msg.params.seed} - ${msg.params.agentCount === 0 ? 'derived' : msg.params.agentCount} agents`
@@ -199,7 +224,15 @@ function onMessage(msg: ServerMessage): void {
     }
 
     case 'error': {
+      // An order malformed before the broker saw it belongs to the ticket that sent it
+      if (ticket.handleError(msg.echo, msg.message)) return;
       log.append([[lastFrame?.simTimeMs ?? 0, 'ERROR', msg.message]], 0);
+      return;
+    }
+
+    case 'userResult': {
+      ticket.handleResult(msg);
+      userOrders.handleResult(msg);
       return;
     }
 
@@ -227,6 +260,11 @@ function applyFrame(f: Frame): void {
   controls.update(f);
   marketStatus.update(f);
   brokerStatus.update(f);
+  if (f.user) {
+    accountPanel.update(f);
+    ticket.update(f);
+    userOrders.update(f);
+  }
 
   if (f.prints.length > 0) {
     bars.add(f.prints);

@@ -36,6 +36,8 @@ export interface Hello {
     totalMinutesPerDay: number;
   };
   params: SimParams;
+  /** The brokers a user account can be priced from, as the server's data file has them */
+  presets: BrokerPreset[];
   config: {
     framesPerSecond: number;
     agentRowsPerSecond: number;
@@ -57,10 +59,46 @@ export interface SimParams {
   transientFraction: number;
   /** The order model's switches, all off by default. See features.ts for what each does. */
   features: Features;
+  /** The user's own account (OrderModelPlan Step 4.2) */
+  user: UserAccountParams;
+}
+
+export interface UserAccountParams {
+  enabled: boolean;
+  /** Real-world dollars when scaled, dollars as entered when not */
+  cash: number;
+  /** Scaled to the market like every agent's money, or dollars as entered */
+  scaled: boolean;
+  /** A preset id from hello.presets */
+  preset: string;
+}
+
+/** One broker's pricing, as Server/presets/brokers.json has it */
+export interface BrokerPreset {
+  id: string;
+  name: string;
+  asOf: string;
+  /** Every figure read from the broker's own published page on asOf */
+  verified: boolean;
+  sources: string[];
+  notes: string;
+  commission: { perShare: number; perOrder: number; min: number; maxPct: number };
+  exchangeFees: { passThrough: boolean; takerPerShare?: number; makerRebatePerShare?: number };
+  regulatory: { passThrough: boolean; catPerShare: number };
+  margin: {
+    apr?: number;
+    tiers?: { from: number; apr: number }[];
+    blended?: boolean;
+    interestFree?: number;
+    houseMaintenance?: number;
+  };
 }
 
 /** What a reset may set. Anything left out keeps the server's current value. */
-export type ResetParams = Partial<Omit<SimParams, 'features'>> & { features?: Partial<Features> };
+export type ResetParams = Partial<Omit<SimParams, 'features' | 'user'>> & {
+  features?: Partial<Features>;
+  user?: Partial<UserAccountParams>;
+};
 
 /** Mirrors Core/include/Features.h, under the names the wire uses */
 export interface Features {
@@ -188,6 +226,108 @@ export interface Frame {
   agents?: { rows: AgentRow[]; omitted: number };
   /* Present only while back data is building */
   backData?: BackDataProgress;
+  /** The user's account, on a run that has one */
+  user?: UserAccount;
+}
+
+export type UserOrderType = 'market' | 'limit' | 'stop' | 'stopLimit' | 'trailingStop';
+export type TimeInForce = 'DAY' | 'GTC' | 'GTD' | 'IOC' | 'FOK' | 'OPG' | 'CLS';
+
+export interface UserOrder {
+  id: string;
+  side: Side;
+  type: UserOrderType;
+  price: number;
+  stopPrice: number;
+  trailAmount: number;
+  /** A percentage: 5 is 5% */
+  trailPercent: number;
+  /** Still to fill, and as entered */
+  qty: number;
+  entered: number;
+  tif: TimeInForce;
+  /** Resting in the book, held by the broker until it triggers, or waiting for a cross */
+  state: 'working' | 'held' | 'auction';
+  short: boolean;
+  hidden: boolean;
+  displayQty: number;
+  midpointPeg: boolean;
+  extendedHours: boolean;
+  /** The OCO or bracket it belongs to, '' if none */
+  group: string;
+}
+
+export interface UserFill {
+  simTimeMs: number;
+  orderId: string;
+  side: Side;
+  price: number;
+  qty: number;
+  fee: number;
+  liquidity: 'added' | 'removed' | 'cross';
+  short: boolean;
+}
+
+export interface UserAccount {
+  broker: string;
+  scaled: boolean;
+  /** Sim dollars per real-world dollar for this account */
+  moneyScale: number;
+  cash: number;
+  escrow: number;
+  equity: number;
+  buyingPower: number;
+  debit: number;
+  long: number;
+  short: number;
+  borrowed: number;
+  margin: boolean;
+  violation: boolean;
+  /** Net shares, long positive */
+  position: number;
+  averageCost: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  feesPaid: number;
+  orders: UserOrder[];
+  /** Executions since the last frame */
+  fills: UserFill[];
+  fillsDropped: number;
+}
+
+/** The outcome of one of the user's commands, sent to every client */
+export interface UserResult {
+  v: number;
+  type: 'userResult';
+  command: 'order' | 'oco' | 'bracket' | 'cancel' | 'replace' | 'sentiment';
+  accepted: boolean;
+  orderId?: string;
+  reason?: string;
+  simTimeMs: number;
+  /** The request's id */
+  echo?: string;
+}
+
+/** An order as the ticket sends it */
+export interface OrderMessage {
+  type: 'order';
+  id?: string;
+  side: 'buy' | 'sell' | 'sellShort';
+  orderType: UserOrderType;
+  qty: number;
+  limitPrice?: number;
+  stopPrice?: number;
+  trailAmount?: number;
+  trailPercent?: number;
+  tif?: TimeInForce;
+  expiresAtMs?: number;
+  extendedHours?: boolean;
+  postOnly?: boolean;
+  hidden?: boolean;
+  displayQty?: number;
+  midpointPeg?: boolean;
+  bracket?: { takeProfit: number; stopLoss: number };
+  oco?: { stopPrice: number; stopLimitPrice?: number };
 }
 
 export interface Backfill {
@@ -201,10 +341,13 @@ export interface Backfill {
 export interface Ack { v: number; type: 'ack'; of: string; echo?: string }
 export interface ProtocolError { v: number; type: 'error'; message: string; echo?: string }
 
-export type ServerMessage = Hello | Frame | Backfill | Ack | ProtocolError;
+export type ServerMessage = Hello | Frame | Backfill | Ack | ProtocolError | UserResult;
 
-/** Outbound control messages. `order` is reserved by the server and refused by name. */
+/** Outbound control messages */
 export type ClientMessage =
+  | OrderMessage
+  | { type: 'cancel'; orderId: string; id?: string }
+  | { type: 'replace'; orderId: string; limitPrice: number; qty: number; id?: string }
   | { type: 'pause' | 'resume' | 'toggle' | 'step' | 'cancelBackData'; id?: string }
   | { type: 'speed'; value: number; id?: string }
   | { type: 'sentiment'; value: number; id?: string }
