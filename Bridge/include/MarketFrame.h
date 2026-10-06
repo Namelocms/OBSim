@@ -145,6 +145,74 @@ struct TradeBackfill {
 	bool truncated = false;
 };
 
+/* One of the user's working orders (OrderModelPlan Step 4.2) */
+struct FrameUserOrder {
+	std::string id;
+	OrderAction side = OrderAction::BID;
+	OrderType type = OrderType::LIMIT;
+	double price = 0.0;
+	double stopPrice = 0.0;
+	double trailAmount = 0.0;
+	double trailPercent = 0.0;
+	/* Still to fill, and as entered */
+	unsigned int volume = 0;
+	unsigned int entryVolume = 0;
+	TimeInForce tif = TimeInForce::DAY;
+	/* Resting in the book, held by the broker until it triggers, or waiting for a cross */
+	bool held = false;
+	bool inAuction = false;
+	bool shortSale = false;
+	bool hidden = false;
+	unsigned int displayQty = 0;
+	bool midpointPeg = false;
+	bool extendedHours = false;
+	/* The OCO or bracket it belongs to */
+	std::string groupId;
+};
+
+/* One of the user's executions */
+struct FrameUserFill {
+	double timeMs = 0.0;
+	std::string orderId;
+	OrderAction side = OrderAction::BID;
+	double price = 0.0;
+	unsigned int volume = 0;
+	double fee = 0.0;
+	bool maker = false;
+	bool auction = false;
+	bool shortSale = false;
+};
+
+/* The user's account, when the run has one */
+struct FrameUser {
+	bool present = false;
+	/* Real-world dollars to sim dollars for this account: 1 when it is in dollars as entered */
+	double moneyScale = 1.0;
+	bool scaled = true;
+	std::string broker;
+	double cash = 0.0;
+	double escrow = 0.0;
+	double equity = 0.0;
+	double buyingPower = 0.0;
+	/* Owed to the broker on margin */
+	double debit = 0.0;
+	unsigned long long longShares = 0;
+	unsigned int shortShares = 0;
+	unsigned int borrowedShares = 0;
+	bool marginPrivileges = false;
+	bool inViolation = false;
+	/* The open position at its average cost, and P&L on it (fees separately) */
+	long long position = 0;
+	double averageCost = 0.0;
+	double realizedPnl = 0.0;
+	double unrealizedPnl = 0.0;
+	double feesPaid = 0.0;
+	std::vector<FrameUserOrder> orders;
+	/* Executions since the last frame */
+	std::vector<FrameUserFill> fills;
+	long long fillsDropped = 0;
+};
+
 struct MarketFrame {
 	// ---- Sequencing ----
 	/* Monotonic frame number, so a consumer can detect a gap it was never sent */
@@ -192,6 +260,8 @@ struct MarketFrame {
 	FrameLending lending;
 	FrameHouse house;
 	FrameBrokerCounts broker;
+	/* The user's account (OrderModelPlan Step 4.2) */
+	FrameUser user;
 
 	// ---- Book depth, best first ----
 	std::vector<BookLevel> bids;

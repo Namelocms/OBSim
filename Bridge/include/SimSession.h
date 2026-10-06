@@ -42,6 +42,10 @@ struct SimParams {
 	double transientFraction = 0.0;
 	/* Which order model mechanisms the run uses, all off by default (OrderModelPlan) */
 	Features features;
+	/* The user's account, and the broker preset it was priced from (OrderModelPlan 4.2).
+	*  Off by default here; the server turns it on. */
+	UserAccountConfig user;
+	std::string userPreset;
 };
 
 struct SimSessionConfig {
@@ -141,6 +145,14 @@ public:
 	/* Abort an in-progress back-data run */
 	void cancelBackData();
 
+	// ---- The user's commands (OrderModelPlan Step 4.2) ----
+
+	/* Hand a command to the engine; its outcome arrives through takeUserResults. Any thread.
+	*  The sentiment controls above are commands too. */
+	void postUserCommand(UserCommand command);
+	/* Outcomes since the last call, oldest first */
+	std::vector<UserCommandResult> takeUserResults();
+
 private:
 	// ---- Engine callbacks, all of these run on the SIM THREAD ----
 	void onTick_();
@@ -163,6 +175,8 @@ private:
 	void fillMarket_(MarketFrame& frame) const;
 	/* Serve any outstanding backfill request. Sim thread only. */
 	void fulfilBackfill_();
+	/* The user's account, position and fills. Sim thread only. */
+	void fillUser_(MarketFrame& frame);
 
 	CoreSim& sim_;
 	SimClock& clock_;
@@ -205,6 +219,16 @@ private:
 	std::mutex backfillMtx_;
 	TradeBackfill backfillData_;
 	bool backfillReady_ = false;
+
+	/* Command outcomes not yet collected */
+	std::mutex userResultsMtx_;
+	std::vector<UserCommandResult> userResults_;
+	/* The user's position by average cost, kept from their fills. Sim thread only. */
+	long long userPosition_ = 0;
+	double userAverageCost_ = 0.0;
+	double userRealized_ = 0.0;
+	double userFees_ = 0.0;
+	size_t userFillsSeen_ = 0;
 
 	std::chrono::steady_clock::time_point lastPublish_;
 	std::chrono::steady_clock::time_point lastAgentPublish_;

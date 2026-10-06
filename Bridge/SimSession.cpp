@@ -36,6 +36,16 @@ void SimSession::start(const SimParams& params) {
 		params.seed, params.backDataDays, params.liveStartSession, params.minLiquidity,
 		params.agentCount, params.shareFloat, params.startPrice, params.transientFraction);
 	this->sim_.setFeatures(params.features);
+	this->sim_.userConfig = params.user;
+	this->userPosition_ = 0;
+	this->userAverageCost_ = 0.0;
+	this->userRealized_ = 0.0;
+	this->userFees_ = 0.0;
+	this->userFillsSeen_ = 0;
+	{
+		std::lock_guard<std::mutex> lk(this->userResultsMtx_);
+		this->userResults_.clear();
+	}
 
 	// Reset everything derived from the previous run, or the first frame of the new one
 	// reports the old one's trades and log lines.
@@ -60,6 +70,11 @@ void SimSession::start(const SimParams& params) {
 	this->sim_.onIdle = [this]() { this->onIdle_(); };
 	this->sim_.onLog = [this](LogEntry e) { this->onLog_(e); };
 	this->sim_.onBackDataProgress = [this](BackDataProgress p) { this->onBackDataProgress_(p); };
+	// Sim thread, or the posting thread for a command refused before it was queued
+	this->sim_.onUserResult = [this](const UserCommandResult& r) {
+		std::lock_guard<std::mutex> lk(this->userResultsMtx_);
+		this->userResults_.push_back(r);
+	};
 
 	this->finished_.store(false);
 	this->threadRunning_.store(true);
@@ -190,12 +205,33 @@ void SimSession::setSpeed(double multiplier) {
 	this->clock_.setSpeed(multiplier);
 }
 
+// The dial is an intervention like an order: a command, applied at a sim time and logged, so
+// a run can be replayed exactly. A write from this thread straight into the book would be
+// neither ordered nor recorded.
 void SimSession::setSentiment(double value) {
-	this->sim_.OB.marketNeutralSentiment = std::clamp(value, -1.0, 1.0);
+	UserCommand c;
+	c.kind = UserCommand::Kind::SENTIMENT;
+	c.value = std::clamp(value, -1.0, 1.0);
+	this->sim_.postUserCommand(std::move(c));
 }
 
 void SimSession::nudgeSentiment(double delta) {
-	this->setSentiment(this->sim_.OB.marketNeutralSentiment + delta);
+	UserCommand c;
+	c.kind = UserCommand::Kind::SENTIMENT;
+	c.value = delta;
+	c.relative = true;
+	this->sim_.postUserCommand(std::move(c));
+}
+
+void SimSession::postUserCommand(UserCommand command) {
+	this->sim_.postUserCommand(std::move(command));
+}
+
+std::vector<UserCommandResult> SimSession::takeUserResults() {
+	std::lock_guard<std::mutex> lk(this->userResultsMtx_);
+	std::vector<UserCommandResult> out;
+	out.swap(this->userResults_);
+	return out;
 }
 
 void SimSession::cancelBackData() {
@@ -297,6 +333,7 @@ void SimSession::publish_() {
 	this->fillBook_(frame);
 	this->fillTrades_(frame);
 	this->fillMarket_(frame);
+	this->fillUser_(frame);
 	this->fulfilBackfill_();
 
 	// Spread comes from the aggregated book rather than Snapshot, so it agrees with the
@@ -524,6 +561,7 @@ void SimSession::fillMarket_(MarketFrame& frame) const {
 	l.feeRate = StockLoan::feeRate(l.utilisation);
 	unsigned long long shortInterest = 0;
 	for (const auto& kv : ob.agents) { if (kv.second != nullptr) { shortInterest += kv.second->shortShares; } }
+	if (ob.user != nullptr) { shortInterest += ob.user->shortShares; }
 	l.shortInterest = shortInterest;
 
 	FrameHouse& h = frame.house;
@@ -546,4 +584,90 @@ void SimSession::fillMarket_(MarketFrame& frame) const {
 	b.brackets = st.groupsCreated;
 	b.tradingPauses = st.tradingPauses;
 	b.ssrTriggers = ob.ssrTriggers;
+}
+
+void SimSession::fillUser_(MarketFrame& frame) {
+	OrderBook& ob = this->sim_.OB;
+	const std::shared_ptr<Agent>& user = ob.user;
+	FrameUser& u = frame.user;
+	if (user == nullptr) { return; }
+
+	// The position by average cost, from every fill since the last frame. Fills are kept
+	// apart from P&L: realized here is price only, and fees are their own line.
+	if (this->userFillsSeen_ > ob.userFills.size()) { this->userFillsSeen_ = 0; }
+	const size_t FILLS_PER_FRAME = 200;
+	for (size_t i = this->userFillsSeen_; i < ob.userFills.size(); ++i) {
+		const OrderBook::UserFill& fill = ob.userFills[i];
+		long long q = (long long)fill.volume;
+		long long signedQ = (fill.side == OrderAction::BID) ? q : -q;
+		long long& pos = this->userPosition_;
+		if (pos == 0 || (pos > 0) == (signedQ > 0)) {
+			// Opening or adding: the average moves
+			double total = this->userAverageCost_ * (double)std::llabs(pos) + fill.price * (double)q;
+			pos += signedQ;
+			this->userAverageCost_ = total / (double)std::llabs(pos);
+		}
+		else {
+			// Reducing, and perhaps flipping through flat
+			long long closing = std::min(q, std::llabs(pos));
+			double perShare = (pos > 0) ? (fill.price - this->userAverageCost_) : (this->userAverageCost_ - fill.price);
+			this->userRealized_ += perShare * (double)closing;
+			pos += (pos > 0) ? -closing : closing;
+			long long rest = q - closing;
+			if (pos == 0) { this->userAverageCost_ = 0.0; }
+			if (rest > 0) {
+				pos = (signedQ > 0) ? rest : -rest;
+				this->userAverageCost_ = fill.price;
+			}
+		}
+		this->userFees_ += fill.fee;
+		if (u.fills.size() < FILLS_PER_FRAME) {
+			FrameUserFill f;
+			f.timeMs = fill.timeMs; f.orderId = fill.orderId; f.side = fill.side; f.price = fill.price;
+			f.volume = fill.volume; f.fee = fill.fee; f.maker = fill.maker; f.auction = fill.auction; f.shortSale = fill.shortSale;
+			u.fills.push_back(std::move(f));
+		}
+		else { ++u.fillsDropped; }
+	}
+	// Drained: the engine's list would otherwise grow for the whole run
+	ob.userFills.clear();
+	this->userFillsSeen_ = 0;
+
+	const double price = ob.currentPrice;
+	u.present = true;
+	u.moneyScale = Account::moneyScale(*user);
+	u.scaled = user->userScaledMoney;
+	u.broker = ob.userFees.name;
+	u.cash = user->cash;
+	u.escrow = Account::escrowedCash(*user);
+	u.equity = Account::equity(*user, price);
+	u.buyingPower = Account::buyingPower(*user);
+	u.debit = Account::debitBalance(*user);
+	u.longShares = Account::longShares(*user);
+	u.shortShares = user->shortShares;
+	u.borrowedShares = user->borrowedShares;
+	u.marginPrivileges = Account::hasMarginPrivileges(*user);
+	u.inViolation = Account::inMaintenanceViolation(*user, price);
+	u.position = this->userPosition_;
+	u.averageCost = this->userAverageCost_;
+	u.realizedPnl = this->userRealized_;
+	u.unrealizedPnl = (this->userPosition_ != 0) ? (price - this->userAverageCost_) * (double)this->userPosition_ : 0.0;
+	u.feesPaid = this->userFees_;
+
+	auto addOrder = [&u](const std::shared_ptr<Order>& o) {
+		if (o == nullptr || o->status != OrderStatus::OPEN) { return; }
+		FrameUserOrder r;
+		r.id = o->id; r.side = o->side; r.type = o->type; r.price = o->price; r.stopPrice = o->stopPrice;
+		r.trailAmount = o->trailAmount; r.trailPercent = o->trailPercent; r.volume = o->volume; r.entryVolume = o->entryVolume;
+		r.tif = o->tif; r.held = o->held; r.inAuction = o->inAuction; r.shortSale = o->isShortSale();
+		r.hidden = o->hidden; r.displayQty = o->displayQty; r.midpointPeg = o->midpointPeg;
+		r.extendedHours = (o->sessions & SESSIONS_EXTENDED_HOURS) != SESSIONS_REGULAR_ONLY;
+		r.groupId = o->groupId;
+		u.orders.push_back(std::move(r));
+	};
+	for (const auto& kv : user->activeBids) { addOrder(kv.second); }
+	for (const auto& kv : user->activeAsks) { addOrder(kv.second); }
+	for (const auto& kv : user->heldOrders) { addOrder(kv.second); }
+	// Oldest first, as a blotter reads
+	std::sort(u.orders.begin(), u.orders.end(), [](const FrameUserOrder& a, const FrameUserOrder& b) { return a.id < b.id; });
 }

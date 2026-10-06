@@ -1,0 +1,184 @@
+{
+  "about": "Broker fee and margin presets for the user's account (OrderModelPlan Step 4.2). Data, compiled into the server: adding or correcting a broker is an edit here. Money is in real-world dollars. SEC Section 31 and FINRA TAF are charged at the engine's standing rates (Core/include/FeeSchedule.h) wherever a broker passes them through. 'verified' says whether every figure was read from the broker's own published page on 'asOf'; where it is false, 'notes' says which figures still need checking.",
+  "presets": [
+    {
+      "id": "generic-retail",
+      "name": "Generic zero-commission retail",
+      "asOf": "2026-10-04",
+      "verified": true,
+      "sources": [],
+      "notes": "No broker in particular: the engine's own retail preset, the same terms retail agents trade on.",
+      "commission": { "perShare": 0, "perOrder": 0, "min": 0, "maxPct": 0 },
+      "exchangeFees": { "passThrough": false },
+      "regulatory": { "passThrough": true, "catPerShare": 0 },
+      "margin": { "apr": 0.085, "houseMaintenance": 0.30 }
+    },
+    {
+      "id": "robinhood",
+      "name": "Robinhood",
+      "asOf": "2026-10-05",
+      "verified": false,
+      "sources": ["https://robinhood.com/us/en/support/articles/margin-rates"],
+      "notes": "Commission and margin tiers from Robinhood's margin rates page (effective 2026-09-17). House maintenance is Robinhood's usual 25% floor, which it raises stock by stock; not checked.",
+      "commission": { "perShare": 0, "perOrder": 0, "min": 0, "maxPct": 0 },
+      "exchangeFees": { "passThrough": false },
+      "regulatory": { "passThrough": true, "catPerShare": 0 },
+      "margin": {
+        "tiers": [
+          { "from": 0, "apr": 0.0525 },
+          { "from": 50000, "apr": 0.0505 },
+          { "from": 100000, "apr": 0.0475 },
+          { "from": 1000000, "apr": 0.045 },
+          { "from": 10000000, "apr": 0.0445 },
+          { "from": 50000000, "apr": 0.042 }
+        ],
+        "blended": false,
+        "interestFree": 0,
+        "houseMaintenance": 0.25
+      }
+    },
+    {
+      "id": "robinhood-gold",
+      "name": "Robinhood Gold",
+      "asOf": "2026-10-05",
+      "verified": false,
+      "sources": ["https://robinhood.com/us/en/support/articles/margin-rates"],
+      "notes": "As Robinhood, with Gold's first $1,000 of margin interest-free. The $5 monthly subscription is not modelled. House maintenance not checked.",
+      "commission": { "perShare": 0, "perOrder": 0, "min": 0, "maxPct": 0 },
+      "exchangeFees": { "passThrough": false },
+      "regulatory": { "passThrough": true, "catPerShare": 0 },
+      "margin": {
+        "tiers": [
+          { "from": 0, "apr": 0.0525 },
+          { "from": 50000, "apr": 0.0505 },
+          { "from": 100000, "apr": 0.0475 },
+          { "from": 1000000, "apr": 0.045 },
+          { "from": 10000000, "apr": 0.0445 },
+          { "from": 50000000, "apr": 0.042 }
+        ],
+        "blended": false,
+        "interestFree": 1000,
+        "houseMaintenance": 0.25
+      }
+    },
+    {
+      "id": "schwab",
+      "name": "Charles Schwab",
+      "asOf": "2026-10-05",
+      "verified": false,
+      "sources": ["https://www.schwab.com/margin/margin-rates-and-requirements"],
+      "notes": "Schwab's own pages refused automated reads; the margin tiers (base rate 10.25%, changed 2026-09-18) are from a secondary summary and need checking against Schwab's page, as does the 30% house maintenance. $0 online stock commission.",
+      "commission": { "perShare": 0, "perOrder": 0, "min": 0, "maxPct": 0 },
+      "exchangeFees": { "passThrough": false },
+      "regulatory": { "passThrough": true, "catPerShare": 0 },
+      "margin": {
+        "tiers": [
+          { "from": 0, "apr": 0.12075 },
+          { "from": 25000, "apr": 0.11575 },
+          { "from": 50000, "apr": 0.10625 },
+          { "from": 100000, "apr": 0.10575 },
+          { "from": 250000, "apr": 0.10325 }
+        ],
+        "blended": false,
+        "interestFree": 0,
+        "houseMaintenance": 0.30
+      }
+    },
+    {
+      "id": "thinkorswim",
+      "name": "thinkorswim (Schwab)",
+      "asOf": "2026-10-05",
+      "verified": false,
+      "sources": ["https://www.schwab.com/margin/margin-rates-and-requirements"],
+      "notes": "thinkorswim is Schwab's trading platform on a Schwab account, so its pricing is Schwab's; the same caveats apply.",
+      "commission": { "perShare": 0, "perOrder": 0, "min": 0, "maxPct": 0 },
+      "exchangeFees": { "passThrough": false },
+      "regulatory": { "passThrough": true, "catPerShare": 0 },
+      "margin": {
+        "tiers": [
+          { "from": 0, "apr": 0.12075 },
+          { "from": 25000, "apr": 0.11575 },
+          { "from": 50000, "apr": 0.10625 },
+          { "from": 100000, "apr": 0.10575 },
+          { "from": 250000, "apr": 0.10325 }
+        ],
+        "blended": false,
+        "interestFree": 0,
+        "houseMaintenance": 0.30
+      }
+    },
+    {
+      "id": "fidelity",
+      "name": "Fidelity",
+      "asOf": "2026-10-05",
+      "verified": false,
+      "sources": ["https://www.fidelity.com/trading/commissions-margin-rates"],
+      "notes": "Commission and margin tiers from Fidelity's own page (base rate 10.825%, effective 2026-09-18; the whole balance at its tier's rate). The 30% house maintenance is Fidelity's usual figure, not checked.",
+      "commission": { "perShare": 0, "perOrder": 0, "min": 0, "maxPct": 0 },
+      "exchangeFees": { "passThrough": false },
+      "regulatory": { "passThrough": true, "catPerShare": 0 },
+      "margin": {
+        "tiers": [
+          { "from": 0, "apr": 0.12075 },
+          { "from": 25000, "apr": 0.11575 },
+          { "from": 50000, "apr": 0.10625 },
+          { "from": 100000, "apr": 0.10575 },
+          { "from": 250000, "apr": 0.10325 },
+          { "from": 500000, "apr": 0.08 },
+          { "from": 1000000, "apr": 0.0775 }
+        ],
+        "blended": false,
+        "interestFree": 0,
+        "houseMaintenance": 0.30
+      }
+    },
+    {
+      "id": "moomoo",
+      "name": "moomoo",
+      "asOf": "2026-10-05",
+      "verified": false,
+      "sources": ["https://www.moomoo.com/us/support/topic4_66"],
+      "notes": "From Moomoo Financial's US fee schedule (updated 2026-10-01): $0 commission, $0 platform fee (a promotion since 2018), SEC fee and FINRA TAF passed through, a CAT fee of $0.000003 a share, long margin 6.8% at every balance. House maintenance not published there; 25% assumed.",
+      "commission": { "perShare": 0, "perOrder": 0, "min": 0, "maxPct": 0 },
+      "exchangeFees": { "passThrough": false },
+      "regulatory": { "passThrough": true, "catPerShare": 0.000003 },
+      "margin": { "apr": 0.068, "houseMaintenance": 0.25 }
+    },
+    {
+      "id": "ibkr-lite",
+      "name": "IBKR Lite",
+      "asOf": "2026-10-05",
+      "verified": false,
+      "sources": [],
+      "notes": "$0 commission on US stocks (secondary summaries; IBKR's pages were not readable). Margin rates not checked: the generic 8.5% stands in until IBKR's figures are entered here.",
+      "commission": { "perShare": 0, "perOrder": 0, "min": 0, "maxPct": 0 },
+      "exchangeFees": { "passThrough": false },
+      "regulatory": { "passThrough": true, "catPerShare": 0 },
+      "margin": { "apr": 0.085, "houseMaintenance": 0.25 }
+    },
+    {
+      "id": "ibkr-pro-fixed",
+      "name": "IBKR Pro (Fixed)",
+      "asOf": "2026-10-05",
+      "verified": false,
+      "sources": [],
+      "notes": "$0.005 a share, $1.00 minimum, at most 1% of trade value, exchange fees included (secondary summaries; IBKR's pages were not readable). Margin rates not checked: the generic 8.5% stands in.",
+      "commission": { "perShare": 0.005, "perOrder": 0, "min": 1.00, "maxPct": 0.01 },
+      "exchangeFees": { "passThrough": false },
+      "regulatory": { "passThrough": true, "catPerShare": 0 },
+      "margin": { "apr": 0.085, "houseMaintenance": 0.25 }
+    },
+    {
+      "id": "ibkr-pro-tiered",
+      "name": "IBKR Pro (Tiered)",
+      "asOf": "2026-10-05",
+      "verified": false,
+      "sources": [],
+      "notes": "$0.0035 a share at up to 300,000 shares a month, $0.35 minimum, at most 1% of trade value, with exchange fees and rebates passed through (secondary summaries). Clearing fees, volume tiers and margin rates not checked: the generic 8.5% stands in.",
+      "commission": { "perShare": 0.0035, "perOrder": 0, "min": 0.35, "maxPct": 0.01 },
+      "exchangeFees": { "passThrough": true, "takerPerShare": 0.003, "makerRebatePerShare": 0.002, "subDollarTakerPct": 0.003, "subDollarMakerRebatePct": 0 },
+      "regulatory": { "passThrough": true, "catPerShare": 0 },
+      "margin": { "apr": 0.085, "houseMaintenance": 0.25 }
+    }
+  ]
+}

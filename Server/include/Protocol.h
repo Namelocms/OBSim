@@ -55,6 +55,10 @@ std::string encodeError(const std::string& message, const std::string& echo);
 /* Acknowledgement of a control message that was honoured */
 std::string encodeAck(const std::string& what, const std::string& echo);
 
+/* The outcome of one of the user's commands, applied or refused (OrderModelPlan Step 4.2).
+*  Sent to every client: they all show the same account. `echo` is the request's id. */
+std::string encodeUserResult(const UserCommandResult& result);
+
 // ---- Inbound ----
 
 /* What a control message asked for */
@@ -70,10 +74,11 @@ enum class Command {
 	Backfill,
 	Reset,
 	CancelBackData,
-	/* Reserved. Recognised and refused, so the shape is claimed rather than left for a
-	*  later version to collide with. Order submission is the one obvious extension and it
-	*  should not force a protocol break when it arrives. */
+	/* The user's own orders (OrderModelPlan Step 4.2): a new order (with an optional
+	*  bracket or OCO), a cancel and a replace. Carried in ControlMessage::userCommand. */
 	Order,
+	Cancel,
+	Replace,
 };
 
 struct ControlMessage {
@@ -86,6 +91,8 @@ struct ControlMessage {
 	size_t limit = 0;
 	/* Parameters for Reset */
 	SimParams params;
+	/* Order, Cancel and Replace */
+	UserCommand userCommand;
 	/* Set when the message could not be understood; the reason is in `error` */
 	bool valid = false;
 	std::string error;

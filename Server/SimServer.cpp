@@ -145,6 +145,13 @@ std::string SimServer::handleControl_(const Protocol::ControlMessage& msg) {
 			for (auto&& client : this->server_->getClients()) { client->sendText(hello); }
 		}
 		return Protocol::encodeAck("reset", msg.id);
+	case Command::Order:
+	case Command::Cancel:
+	case Command::Replace:
+		// Queued for the sim thread; the outcome is a userResult to every client, sent by the
+		// publisher once the engine has applied (or refused) it
+		this->session_.postUserCommand(msg.userCommand);
+		return Protocol::encodeAck(msg.command == Command::Order ? "order" : (msg.command == Command::Cancel ? "cancel" : "replace"), msg.id);
 	default:
 		return Protocol::encodeError("unhandled command", msg.id);
 	}
@@ -160,6 +167,14 @@ void SimServer::publisherLoop_() {
 		// Backfill first. A client that just connected should receive history before the
 		// live frames that continue it, or its chart briefly draws a gap and then fills in
 		// behind itself.
+		// The user's command outcomes, before the frame that shows their effect
+		for (const UserCommandResult& r : this->session_.takeUserResults()) {
+			const std::string payload = Protocol::encodeUserResult(r);
+			if (this->server_) {
+				for (auto&& client : this->server_->getClients()) { client->sendText(payload); }
+			}
+		}
+
 		TradeBackfill backfill;
 		if (this->session_.takeBackfill(backfill)) {
 			const std::string payload = Protocol::encodeBackfill(backfill);

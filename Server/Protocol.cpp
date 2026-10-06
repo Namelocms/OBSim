@@ -1,4 +1,6 @@
 #include "include/Protocol.h"
+#include "include/Presets.h"
+#include <cmath>
 
 #include <nlohmann/json.hpp>
 
@@ -98,6 +100,45 @@ json featuresJson(const Features& f) {
 * the opening and closing crosses and "R" for a reopening after a pause; a cross's side is
 * the side of its imbalance.
 */
+const char* sideName(OrderAction a) { return (a == OrderAction::BID) ? "B" : "S"; }
+
+const char* tifName(TimeInForce t) {
+	switch (t) {
+	case TimeInForce::DAY: return "DAY";
+	case TimeInForce::GTC: return "GTC";
+	case TimeInForce::GTD: return "GTD";
+	case TimeInForce::IOC: return "IOC";
+	case TimeInForce::FOK: return "FOK";
+	case TimeInForce::OPG: return "OPG";
+	default:               return "CLS";
+	}
+}
+
+bool tifFromName(const std::string& name, TimeInForce& out) {
+	static const std::pair<const char*, TimeInForce> names[] = {
+		{ "DAY", TimeInForce::DAY }, { "GTC", TimeInForce::GTC }, { "GTD", TimeInForce::GTD }, { "IOC", TimeInForce::IOC },
+		{ "FOK", TimeInForce::FOK }, { "OPG", TimeInForce::OPG }, { "CLS", TimeInForce::CLS },
+	};
+	for (const auto& n : names) { if (name == n.first) { out = n.second; return true; } }
+	return false;
+}
+
+const char* commandName(UserCommand::Kind k) {
+	switch (k) {
+	case UserCommand::Kind::ORDER:     return "order";
+	case UserCommand::Kind::OCO:       return "oco";
+	case UserCommand::Kind::BRACKET:   return "bracket";
+	case UserCommand::Kind::CANCEL:    return "cancel";
+	case UserCommand::Kind::REPLACE:   return "replace";
+	default:                           return "sentiment";
+	}
+}
+
+/* The most a single order may be for, so a hostile message cannot ask for 4 billion shares */
+constexpr long long MAX_ORDER_SHARES = 10'000'000;
+constexpr double MAX_PRICE = 10'000'000.0;
+constexpr size_t MAX_ID_LENGTH = 64;
+
 json printTuple(const TradePrint& t) {
 	return json::array({
 		MarketCalendar::simTimeToEpochSec(t.timeMs),
@@ -143,7 +184,15 @@ std::string encodeHello(const SimParams& params, const SimSessionConfig& config)
 		{ "startPrice",        params.startPrice },
 		{ "transientFraction", params.transientFraction },
 		{ "features",          featuresJson(params.features) },
+		{ "user", {
+			{ "enabled", params.user.enabled },
+			{ "cash",    params.user.cash },
+			{ "scaled",  params.user.scaled },
+			{ "preset",  params.userPreset },
+		} },
 	};
+	// The brokers a user account can be priced from, as the data file has them
+	j["presets"] = Presets::all();
 	j["config"] = {
 		{ "framesPerSecond",    config.framesPerSecond },
 		{ "agentRowsPerSecond", config.agentRowsPerSecond },
@@ -269,6 +318,43 @@ std::string encodeFrame(const MarketFrame& f) {
 		j["agents"] = { { "rows", std::move(rows) }, { "omitted", f.agentsOmitted } };
 	}
 
+	// The user's account, only when the run has one (OrderModelPlan Step 4.2)
+	if (f.user.present) {
+		const FrameUser& u = f.user;
+		json orders = json::array();
+		for (const FrameUserOrder& o : u.orders) {
+			std::string type = (o.type == OrderType::LIMIT) ? "limit" : "market";
+			if (o.held) {
+				type = (o.trailAmount > 0.0 || o.trailPercent > 0.0) ? "trailingStop" : (o.type == OrderType::LIMIT ? "stopLimit" : "stop");
+			}
+			orders.push_back({
+				{ "id", o.id }, { "side", sideName(o.side) }, { "type", type }, { "price", o.price },
+				{ "stopPrice", o.stopPrice }, { "trailAmount", o.trailAmount }, { "trailPercent", o.trailPercent * 100.0 },
+				{ "qty", o.volume }, { "entered", o.entryVolume }, { "tif", tifName(o.tif) },
+				{ "state", o.held ? "held" : (o.inAuction ? "auction" : "working") },
+				{ "short", o.shortSale }, { "hidden", o.hidden }, { "displayQty", o.displayQty },
+				{ "midpointPeg", o.midpointPeg }, { "extendedHours", o.extendedHours }, { "group", o.groupId },
+				});
+		}
+		json fills = json::array();
+		for (const FrameUserFill& x : u.fills) {
+			fills.push_back({
+				{ "simTimeMs", x.timeMs }, { "orderId", x.orderId }, { "side", sideName(x.side) }, { "price", x.price },
+				{ "qty", x.volume }, { "fee", x.fee }, { "liquidity", x.auction ? "cross" : (x.maker ? "added" : "removed") },
+				{ "short", x.shortSale },
+				});
+		}
+		j["user"] = {
+			{ "broker", u.broker }, { "scaled", u.scaled }, { "moneyScale", u.moneyScale },
+			{ "cash", u.cash }, { "escrow", u.escrow }, { "equity", u.equity }, { "buyingPower", u.buyingPower },
+			{ "debit", u.debit }, { "long", u.longShares }, { "short", u.shortShares }, { "borrowed", u.borrowedShares },
+			{ "margin", u.marginPrivileges }, { "violation", u.inViolation },
+			{ "position", u.position }, { "averageCost", u.averageCost }, { "realizedPnl", u.realizedPnl },
+			{ "unrealizedPnl", u.unrealizedPnl }, { "feesPaid", u.feesPaid },
+			{ "orders", std::move(orders) }, { "fills", std::move(fills) }, { "fillsDropped", u.fillsDropped },
+		};
+	}
+
 	if (f.backDataRunning) {
 		const BackDataProgress& p = f.backData;
 		j["backData"] = {
@@ -313,6 +399,17 @@ std::string encodeAck(const std::string& what, const std::string& echo) {
 	json j = envelope("ack");
 	j["of"] = what;
 	if (!echo.empty()) { j["echo"] = echo; }
+	return j.dump();
+}
+
+std::string encodeUserResult(const UserCommandResult& r) {
+	json j = envelope("userResult");
+	j["command"] = commandName(r.kind);
+	j["accepted"] = r.accepted;
+	if (!r.orderId.empty()) { j["orderId"] = r.orderId; }
+	if (!r.reason.empty()) { j["reason"] = r.reason; }
+	j["simTimeMs"] = r.atMs;
+	if (!r.requestId.empty()) { j["echo"] = r.requestId; }
 	return j.dump();
 }
 
@@ -373,10 +470,161 @@ ControlMessage decodeControl(const std::string& text) {
 		msg.valid = true;
 		return msg;
 	}
+	// ---- The user's orders (OrderModelPlan Step 4.2) ----
+	//
+	// Input nobody here produced: every field is type checked and bounded, and a refusal says
+	// which field and why. What the broker decides -- buying power, shares to sell, a locate --
+	// is the broker's to refuse, after this, as a userResult.
+	auto positive = [&j](const char* key, double& out, std::string& error) {
+		if (!j.contains(key)) { error = std::string(key) + " is required"; return false; }
+		if (!j[key].is_number()) { error = std::string(key) + " must be a number"; return false; }
+		double v = j[key].get<double>();
+		if (!std::isfinite(v) || !(v > 0.0) || v > MAX_PRICE) { error = std::string(key) + " must be a positive price"; return false; }
+		out = v;
+		return true;
+	};
+	auto flag = [](const json& o, const char* key, bool& out, std::string& error) {
+		if (!o.contains(key)) { return true; }
+		if (!o[key].is_boolean()) { error = std::string(key) + " must be true or false"; return false; }
+		out = o[key].get<bool>();
+		return true;
+	};
+	auto shares = [](const json& o, const char* key, long long minimum, unsigned int& out, std::string& error) {
+		if (!o.contains(key)) { error = std::string(key) + " is required"; return false; }
+		if (!o[key].is_number_integer()) { error = std::string(key) + " must be a whole number of shares"; return false; }
+		long long v = o[key].get<long long>();
+		if (v < minimum || v > MAX_ORDER_SHARES) { error = std::string(key) + " must be between " + std::to_string(minimum) + " and 10,000,000"; return false; }
+		out = (unsigned int)v;
+		return true;
+	};
+	auto orderId = [&j](std::string& out, std::string& error) {
+		if (!j.contains("orderId") || !j["orderId"].is_string()) { error = "orderId must be a string"; return false; }
+		out = j["orderId"].get<std::string>();
+		if (out.empty() || out.size() > MAX_ID_LENGTH) { error = "orderId is empty or too long"; return false; }
+		return true;
+	};
+
 	if (type == "order") {
-		// Deliberately recognised. Refusing by name is what reserves the shape.
 		msg.command = Command::Order;
-		msg.error = "order submission is not implemented in protocol version 1";
+		UserCommand& c = msg.userCommand;
+		c.requestId = msg.id;
+		std::string& e = msg.error;
+
+		if (!j.contains("side") || !j["side"].is_string()) { e = "side must be buy, sell or sellShort"; return msg; }
+		const std::string side = j["side"].get<std::string>();
+		OrderAction action = OrderAction::BID;
+		SaleMark mark = SaleMark::LONG;
+		if (side == "buy") { action = OrderAction::BID; }
+		else if (side == "sell") { action = OrderAction::ASK; }
+		else if (side == "sellShort") { action = OrderAction::ASK; mark = SaleMark::SHORT; }
+		else { e = "side must be buy, sell or sellShort"; return msg; }
+
+		if (!j.contains("orderType") || !j["orderType"].is_string()) { e = "orderType must be market, limit, stop, stopLimit or trailingStop"; return msg; }
+		const std::string kind = j["orderType"].get<std::string>();
+		const bool isLimit = (kind == "limit" || kind == "stopLimit");
+		const bool isStop = (kind == "stop" || kind == "stopLimit");
+		const bool isTrail = (kind == "trailingStop");
+		if (kind != "market" && !isLimit && !isStop && !isTrail) { e = "orderType must be market, limit, stop, stopLimit or trailingStop"; return msg; }
+
+		OrderRequest r{ action, isLimit ? OrderType::LIMIT : OrderType::MARKET };
+		r.mark = mark;
+		if (!shares(j, "qty", 1, r.volume, e)) { return msg; }
+		if (isLimit && !positive("limitPrice", r.price, e)) { return msg; }
+		if (isStop && !positive("stopPrice", r.stopPrice, e)) { return msg; }
+		if (isTrail) {
+			const bool amount = j.contains("trailAmount"), percent = j.contains("trailPercent");
+			if (amount == percent) { e = "a trailing stop needs exactly one of trailAmount and trailPercent"; return msg; }
+			if (amount && !positive("trailAmount", r.trailAmount, e)) { return msg; }
+			if (percent) {
+				if (!j["trailPercent"].is_number()) { e = "trailPercent must be a number"; return msg; }
+				double pct = j["trailPercent"].get<double>();
+				if (!std::isfinite(pct) || !(pct > 0.0) || !(pct < 100.0)) { e = "trailPercent must be between 0 and 100"; return msg; }
+				r.trailPercent = pct / 100.0;
+			}
+		}
+
+		r.tif = TimeInForce::DAY;
+		if (j.contains("tif")) {
+			if (!j["tif"].is_string() || !tifFromName(j["tif"].get<std::string>(), r.tif)) { e = "tif must be DAY, GTC, GTD, IOC, FOK, OPG or CLS"; return msg; }
+		}
+		if (r.tif == TimeInForce::GTD) {
+			if (!j.contains("expiresAtMs") || !j["expiresAtMs"].is_number()) { e = "a GTD order needs expiresAtMs"; return msg; }
+			r.expiresAtMs = j["expiresAtMs"].get<double>();
+			if (!std::isfinite(r.expiresAtMs) || r.expiresAtMs < 0.0) { e = "expiresAtMs must be a sim time"; return msg; }
+		}
+		bool extended = false;
+		if (!flag(j, "extendedHours", extended, e)) { return msg; }
+		r.sessions = extended ? SESSIONS_EXTENDED_HOURS : SESSIONS_REGULAR_ONLY;
+		if (!flag(j, "postOnly", r.postOnly, e) || !flag(j, "hidden", r.hidden, e) || !flag(j, "midpointPeg", r.midpointPeg, e)) { return msg; }
+		if (j.contains("displayQty") && !shares(j, "displayQty", 0, r.displayQty, e)) { return msg; }
+		if (r.displayQty >= r.volume) { r.displayQty = 0; }   // showing all of it is not a reserve order
+
+		const bool hasBracket = j.contains("bracket"), hasOco = j.contains("oco");
+		if (hasBracket && hasOco) { e = "an order takes a bracket or an OCO, not both"; return msg; }
+		if (hasBracket) {
+			const json& b = j["bracket"];
+			if (!b.is_object()) { e = "bracket must be an object"; return msg; }
+			if (isStop || isTrail) { e = "a bracket's entry cannot be a stop"; return msg; }
+			if (side == "sell") { e = "a bracket opens a position: buy, or sellShort"; return msg; }
+			auto bpos = [&b](const char* key, double& out, std::string& error) {
+				if (!b.contains(key) || !b[key].is_number()) { error = std::string("bracket.") + key + " must be a number"; return false; }
+				double v = b[key].get<double>();
+				if (!std::isfinite(v) || !(v > 0.0) || v > MAX_PRICE) { error = std::string("bracket.") + key + " must be a positive price"; return false; }
+				out = v;
+				return true;
+			};
+			c.kind = UserCommand::Kind::BRACKET;
+			c.bracket.entry = r;
+			if (!bpos("takeProfit", c.bracket.takeProfit, e) || !bpos("stopLoss", c.bracket.stopLoss, e)) { return msg; }
+			c.bracket.childTif = TimeInForce::GTC;
+		}
+		else if (hasOco) {
+			const json& o = j["oco"];
+			if (!o.is_object()) { e = "oco must be an object"; return msg; }
+			if (kind != "limit") { e = "an OCO pairs a limit order with a stop: orderType must be limit"; return msg; }
+			OrderRequest stop{ action, OrderType::MARKET };
+			stop.mark = mark;
+			stop.volume = r.volume;
+			stop.tif = (r.tif == TimeInForce::DAY) ? TimeInForce::DAY : TimeInForce::GTC;
+			stop.sessions = r.sessions;
+			if (!o.contains("stopPrice") || !o["stopPrice"].is_number()) { e = "oco.stopPrice must be a number"; return msg; }
+			stop.stopPrice = o["stopPrice"].get<double>();
+			if (!std::isfinite(stop.stopPrice) || !(stop.stopPrice > 0.0) || stop.stopPrice > MAX_PRICE) { e = "oco.stopPrice must be a positive price"; return msg; }
+			if (o.contains("stopLimitPrice")) {
+				if (!o["stopLimitPrice"].is_number()) { e = "oco.stopLimitPrice must be a number"; return msg; }
+				double lp = o["stopLimitPrice"].get<double>();
+				if (!std::isfinite(lp) || !(lp > 0.0) || lp > MAX_PRICE) { e = "oco.stopLimitPrice must be a positive price"; return msg; }
+				stop.type = OrderType::LIMIT;
+				stop.price = lp;
+			}
+			c.kind = UserCommand::Kind::OCO;
+			c.order = r;
+			c.stopLeg = stop;
+		}
+		else {
+			c.kind = UserCommand::Kind::ORDER;
+			c.order = r;
+		}
+		msg.valid = true;
+		return msg;
+	}
+	if (type == "cancel") {
+		msg.command = Command::Cancel;
+		msg.userCommand.kind = UserCommand::Kind::CANCEL;
+		msg.userCommand.requestId = msg.id;
+		if (!orderId(msg.userCommand.orderId, msg.error)) { return msg; }
+		msg.valid = true;
+		return msg;
+	}
+	if (type == "replace") {
+		msg.command = Command::Replace;
+		UserCommand& c = msg.userCommand;
+		c.kind = UserCommand::Kind::REPLACE;
+		c.requestId = msg.id;
+		if (!orderId(c.orderId, msg.error)) { return msg; }
+		if (!positive("limitPrice", c.price, msg.error)) { return msg; }
+		if (!shares(j, "qty", 1, c.volume, msg.error)) { return msg; }
+		msg.valid = true;
 		return msg;
 	}
 	if (type == "reset") {
@@ -387,6 +635,13 @@ ControlMessage decodeControl(const std::string& text) {
 		}
 		const json& p = j["params"];
 		SimParams out;   // defaults stand in for anything not supplied
+		// A user account by default, on the generic preset: the person at the screen trades
+		out.user.enabled = true;
+		out.userPreset = Presets::DEFAULT_ID;
+		{
+			std::string ignored;
+			Presets::feeSchedule(out.userPreset, out.user.fees, ignored);
+		}
 		auto uintField = [&p](const char* key, unsigned int& dst) {
 			if (p.contains(key) && p[key].is_number()) { dst = (unsigned int)p[key].get<double>(); }
 			};
@@ -432,6 +687,26 @@ ControlMessage decodeControl(const std::string& text) {
 				long long tier = fj["luldTier"].get<long long>();
 				if (tier != 1 && tier != 2) { msg.error = "features.luldTier must be 1 or 2"; return msg; }
 				f.luld.tier = (int)tier;
+			}
+		}
+		// The user's account (OrderModelPlan Step 4.2)
+		if (p.contains("user")) {
+			const json& u = p["user"];
+			if (!u.is_object()) { msg.error = "user must be an object"; return msg; }
+			if (!flag(u, "enabled", out.user.enabled, msg.error)) { msg.error = "user." + msg.error; return msg; }
+			if (!flag(u, "scaled", out.user.scaled, msg.error)) { msg.error = "user." + msg.error; return msg; }
+			if (u.contains("cash")) {
+				if (!u["cash"].is_number()) { msg.error = "user.cash must be a number"; return msg; }
+				double cash = u["cash"].get<double>();
+				if (!std::isfinite(cash) || cash < 0.0 || cash > 1e12) { msg.error = "user.cash must be between 0 and 1e12"; return msg; }
+				out.user.cash = cash;
+			}
+			if (u.contains("preset")) {
+				if (!u["preset"].is_string()) { msg.error = "user.preset must be a preset id"; return msg; }
+				std::string why;
+				std::string id = u["preset"].get<std::string>();
+				if (id.size() > MAX_ID_LENGTH || !Presets::feeSchedule(id, out.user.fees, why)) { msg.error = "user.preset: " + why; return msg; }
+				out.userPreset = id;
 			}
 		}
 		if (!(out.startPrice > 0.0)) { msg.error = "startPrice must be positive"; return msg; }

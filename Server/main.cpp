@@ -5,6 +5,7 @@
 // the same protocol.
 
 #include <cstdio>
+#include "Presets.h"
 #include <cstdlib>
 #include <chrono>
 #include <string>
@@ -31,6 +32,13 @@ int main(int argc, char** argv) {
 	params.shareFloat = 250'000;
 	params.startPrice = 1.00;
 	params.transientFraction = TRANSIENT_DEFAULT_FRACTION;
+	// The person at the screen gets an account, on the generic preset (OrderModelPlan 4.2)
+	params.user.enabled = true;
+	params.userPreset = Presets::DEFAULT_ID;
+	{
+		std::string ignored;
+		Presets::feeSchedule(params.userPreset, params.user.fees, ignored);
+	}
 
 	// Deliberately minimal argument handling: every one of these is also settable at
 	// runtime through the protocol's reset message, which is where a frontend will do it.

@@ -12,6 +12,7 @@
 // printing -- see fail().
 
 #include <chrono>
+#include "Presets.h"
 #include <cstdlib>
 #include <string>
 #include <thread>
@@ -57,6 +58,13 @@ int runApp(int argc, char** argv) {
 	params.shareFloat = 250'000;
 	params.startPrice = 1.00;
 	params.transientFraction = TRANSIENT_DEFAULT_FRACTION;
+	// The person at the screen gets an account, on the generic preset (OrderModelPlan 4.2)
+	params.user.enabled = true;
+	params.userPreset = Presets::DEFAULT_ID;
+	{
+		std::string ignored;
+		Presets::feeSchedule(params.userPreset, params.user.fees, ignored);
+	}
 
 	for (int i = 1; i < argc; ++i) {
 		const std::string arg = argv[i];
